@@ -66,10 +66,10 @@ CORE SCALING:
 
 TMC/EMON INTEGRATION:
   -e, --emon                 Enable TMC/EMON integration (default: disabled)
-  --emon-user USER           TMC username (required if --emon)
-  --emon-group GROUP         TMC group name (required if --emon)
+  --emon-user USER           TMC username (optional, workload script default used)
+  --emon-group GROUP         TMC group name (optional, workload script default used)
+  --emon-server SERVER       Server identifier (optional, workload script default used)
   --emon-session SESSION     TMC session identifier (required if --emon)
-  --emon-server SERVER       Server identifier (required if --emon)
 
 WORKLOAD RESULTS:
   --workload-name NAME       Workload name for results file (required if --emon)
@@ -91,23 +91,22 @@ EXAMPLES:
   # Actual execution with specific nproc
   $0 --script ./benchmarks/ml_training.sh --nproc 32 --run
 
-  # Full TMC integration
-  $0 --script ./benchmarks/hpc_workload.sh --cores 4 --emon \\
-     --emon-user john --emon-group scaling_test --emon-session \"hpc_scaling\" \\
-     --emon-server cluster01 --workload-name \"HPC Benchmark\" --metric-unit \"GFLOPS\" --run
+  # CHANGE THIS EXAMPLE:
+  # Minimal TMC integration (uses workload script defaults)
+  $0 --script ./benchmarks/mediawiki.sh --cores 4 --emon \\
+     --emon-session \"scaling_test\" --workload-name \"MediaWiki\" --metric-unit \"requests/sec\" --run
 
-  # With script arguments
-  $0 --script ./benchmarks/database.sh --cores 8 --script-args \"--batch-size 1000 --threads 16\" --run
+  # Full TMC integration with custom parameters
+  $0 --script ./benchmarks/hpc_workload.sh --cores 4 --emon \\
+     --emon-user john --emon-group custom_group --emon-server cluster01 \\
+     --emon-session \"hpc_scaling\" --workload-name \"HPC Benchmark\" --metric-unit \"GFLOPS\" --run
 "
 }
 
 validate_emon_params(){
     local missing_params=()
     
-    if [[ -z "$emon_user" ]]; then missing_params+=("--emon-user"); fi
-    if [[ -z "$emon_group" ]]; then missing_params+=("--emon-group"); fi
     if [[ -z "$emon_session" ]]; then missing_params+=("--emon-session"); fi
-    if [[ -z "$emon_server" ]]; then missing_params+=("--emon-server"); fi
     if [[ -z "$workload_name" ]]; then missing_params+=("--workload-name"); fi
     if [[ -z "$metric_unit" ]]; then missing_params+=("--metric-unit"); fi
     
@@ -268,7 +267,20 @@ run_workload_with_cores(){
     
     if [[ $enable_emon -eq 1 ]]; then
         # TMC command
-        local tmc_cmd="tmc.py -x \"$emon_user\" -G \"$emon_group\" -i \"${emon_session}_${cores}cores\" -c \"$workload_cmd\" -d \"$output_dir\" -n"
+        local tmc_cmd="tmc.py -c \"$workload_cmd\" -d \"$output_dir\" -n"
+        
+        # Add optional parameters only if provided
+        if [[ -n "$emon_user" ]]; then
+            tmc_cmd="$tmc_cmd -x \"$emon_user\""
+        fi
+        
+        if [[ -n "$emon_group" ]]; then
+            tmc_cmd="$tmc_cmd -G \"$emon_group\""
+        fi
+        
+        if [[ -n "$emon_session" ]]; then
+            tmc_cmd="$tmc_cmd -i \"${emon_session}_${cores}cores\""
+        fi
         
         if [[ $emon_duration -gt 0 ]]; then
             tmc_cmd="$tmc_cmd -t $emon_duration"
