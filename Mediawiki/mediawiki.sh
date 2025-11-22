@@ -23,6 +23,10 @@ DEFAULT_RUNS=1
 DEFAULT_TYPE="local"
 DEFAULT_CLIENTS_PER_100_CORES=1
 
+DEFAULT_EMON_USER="pshah"
+DEFAULT_EMON_SERVER="metrics2"
+DEFAULT_EMON_GROUP="mediawiki"
+
 # ------------------------------ VARIABLES -----------------------------------
 cores=""
 duration=$DEFAULT_DURATION
@@ -31,6 +35,10 @@ clients=""
 workload_type=$DEFAULT_TYPE
 metric_collection="none"  # none, emon, perf, ptat
 custom_name=""
+
+emon_user=$DEFAULT_EMON_USER
+emon_server=$DEFAULT_EMON_SERVER  
+emon_group=$DEFAULT_EMON_GROUP
 
 # EMON/TMC specific (will be handled by main wrapper)
 enable_emon_direct=0
@@ -51,6 +59,9 @@ OPTIONAL:
   --name NAME            Custom name prefix for logs
   --metric TYPE          Direct metric collection: none/emon/perf/ptat (default: none)
                         Note: Use main wrapper --emon instead of --metric emon
+  --emon-user USER       EMON username (default: $DEFAULT_EMON_USER)
+  --emon-server SERVER   EMON server (default: $DEFAULT_EMON_SERVER)  
+  --emon-group GROUP     EMON group (default: $DEFAULT_EMON_GROUP)
 
 EXAMPLES:
   $0 --cores 32 --duration 60 --runs 3
@@ -237,7 +248,7 @@ run_mediawiki_benchmark() {
                 local emon_start=600
                 local emon_end=$((duration * 300 - 600))
                 local ramp_string="Starting wrk for benchmark"
-                final_cmd="tmc -c \"$base_cmd\" -rl $logs_file -rs \"$ramp_string\" -rt 2800 -n -u -x pshah -a ${logs_dir}_RUN${run_number} -S $emon_start -E $emon_end -A 10 -B $((duration * 30 - 10)) -w socket,core,uncore -Z metrics2 -G mediawiki_wrapper"
+                final_cmd="tmc -c \"$base_cmd\" -rl $logs_file -rs \"$ramp_string\" -rt 2800 -n -u -x $emon_user -a ${logs_dir}_RUN${run_number} -S $emon_start -E $emon_end -A 10 -B $((duration * 30 - 10)) -w socket,core,uncore -Z $emon_server -G $emon_group"
             else
                 echo "EMON setup failed, running without EMON"
                 final_cmd="$base_cmd 2>&1 | tee $logs_file"
@@ -319,6 +330,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --metric)
             metric_collection="$2"
+            shift 2
+            ;;
+        --emon-user)
+            emon_user="$2"
+            shift 2
+            ;;
+        --emon-server)
+            emon_server="$2"
+            shift 2
+            ;;
+        --emon-group)
+            emon_group="$2"
             shift 2
             ;;
         -h|--help)
