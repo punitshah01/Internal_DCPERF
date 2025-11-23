@@ -290,7 +290,7 @@ install_hhvm() {
         return 1
     }
     
-    sudo ./pour-hhvm.sh || {
+    ./pour-hhvm.sh || {
         log_error "Failed to run pour-hhvm.sh"
         return 1
     }
