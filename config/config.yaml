@@ -1,0 +1,73 @@
+# Default SUT configurations
+sut_hosts:
+  staging: "staging-sut.example.com"
+  production: "prod-sut.example.com"
+  development: "dev-sut.example.com"
+
+# Test case configurations
+test_cases:
+  test_case_1:
+    name: "Basic Connectivity Test"
+    description: "Tests basic HTTP/HTTPS connectivity to SUT"
+    timeout: 300
+    retry_count: 3
+    
+  test_case_2:
+    name: "Performance Test"
+    description: "Tests system performance under load"
+    timeout: 600
+    retry_count: 1
+    
+  test_case_3:
+    name: "Security Test"
+    description: "Tests security configurations and vulnerabilities"
+    timeout: 900
+    retry_count: 2
+    
+  test_case_4:
+    name: "Database Connectivity Test"
+    description: "Tests database connections and queries"
+    timeout: 300
+    retry_count: 3
+    
+  test_case_5:
+    name: "API Integration Test"
+    description: "Tests API endpoints and integrations"
+    timeout: 450
+    retry_count: 2
+    
+  test_case_6:
+    name: "End-to-End Test"
+    description: "Complete end-to-end workflow test"
+    timeout: 1200
+    retry_count: 1
+
+# Environment-specific settings
+environments:
+  staging:
+    timeout_multiplier: 1.0
+    parallel_execution: true
+    
+  production:
+    timeout_multiplier: 1.5
+    parallel_execution: false
+    
+  development:
+    timeout_multiplier: 0.8
+    parallel_execution: true
+
+# Reporting settings
+reporting:
+  formats: ["html", "json", "junit"]
+  include_screenshots: true
+  include_logs: true
+  
+# Notification settings
+notifications:
+  slack:
+    enabled: false
+    webhook_url: ""
+  email:
+    enabled: false
+    smtp_server: ""
+    recipients: []
