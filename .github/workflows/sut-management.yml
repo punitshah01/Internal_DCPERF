@@ -1,0 +1,274 @@
+name: SUT Management
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_os:
+        description: 'Select Runner OS'
+        type: choice
+        options:
+          - ubuntu-latest
+          - CentOS-latest
+        default: 'ubuntu-latest'
+        required: true
+      
+      action:
+        description: 'Action to perform'
+        type: choice
+        options:
+          - add_sut
+          - delete_sut
+          - list_suts
+          - update_sut
+          - test_connectivity
+        default: 'list_suts'
+        required: true
+      
+      sut_name:
+        description: 'SUT Name (required for add/delete/update/test)'
+        required: false
+        type: string
+        default: ''
+      
+      sut_host:
+        description: 'SUT Host/IP Address (required for add/update)'
+        required: false
+        type: string
+        default: ''
+      
+      sut_description:
+        description: 'SUT Description (optional)'
+        required: false
+        type: string
+        default: ''
+      
+      cpu_family:
+        description: 'CPU Family (for add/update)'
+        type: choice
+        options:
+          - GNR-AP
+          - SRF-SP
+          - SRF-AP
+          - CWF-AP
+          - Generic
+        default: 'Generic'
+        required: false
+      
+      os_type:
+        description: 'Operating System (for add/update)'
+        type: choice
+        options:
+          - Linux
+          - Windows
+          - Unknown
+        default: 'Linux'
+        required: false
+      
+      labels:
+        description: 'Runner Labels (comma-separated, for add/update)'
+        required: false
+        type: string
+        default: 'self-hosted,linux'
+
+env:
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  manage-sut:
+    runs-on: ${{ github.event.inputs.runner_os }}
+    timeout-minutes: 30
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+    
+    # OS Detection and Info
+    - name: Display OS Information
+      run: |
+        echo "🖥️  Runner OS: ${{ github.event.inputs.runner_os }}"
+        echo "📋 System Information:"
+        if [ -f /etc/os-release ]; then
+          cat /etc/os-release
+        elif [ -f /etc/redhat-release ]; then
+          cat /etc/redhat-release
+        else
+          uname -a
+        fi
+        echo ""
+        echo "🐍 Available Python versions:"
+        ls -la /usr/bin/python* 2>/dev/null || echo "Python not found in /usr/bin/"
+    
+    # Setup Python - Ubuntu
+    - name: Setup Python - Ubuntu
+      if: github.event.inputs.runner_os == 'ubuntu-latest'
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    # Setup Python - CentOS (manual installation)
+    - name: Setup Python - CentOS
+      if: github.event.inputs.runner_os == 'CentOS-latest'
+      run: |
+        echo "🔧 Setting up Python on CentOS..."
+        
+        # Check if Python 3.10 is already available
+        if command -v python3.10 &> /dev/null; then
+          echo "✅ Python 3.10 already installed"
+          python3.10 --version
+        elif command -v python3 &> /dev/null; then
+          echo "✅ Using available Python 3"
+          python3 --version
+          # Create symlink for consistency
+          sudo ln -sf $(which python3) /usr/local/bin/python3.10 || true
+        else
+          echo "📦 Installing Python 3..."
+          # Install Python 3 on CentOS
+          sudo yum update -y || sudo dnf update -y
+          sudo yum install -y python3 python3-pip || sudo dnf install -y python3 python3-pip
+          
+          # Verify installation
+          python3 --version
+          pip3 --version
+        fi
+        
+        # Set up pip
+        python3 -m pip install --user --upgrade pip || pip3 install --user --upgrade pip
+    
+    # Install dependencies - Ubuntu
+    - name: Install dependencies - Ubuntu
+      if: github.event.inputs.runner_os == 'ubuntu-latest'
+      run: |
+        echo "📦 Installing Python dependencies on Ubuntu..."
+        python -m pip install --upgrade pip
+        pip install pyyaml requests tabulate
+    
+    # Install dependencies - CentOS
+    - name: Install dependencies - CentOS
+      if: github.event.inputs.runner_os == 'CentOS-latest'
+      run: |
+        echo "📦 Installing Python dependencies on CentOS..."
+        
+        # Use the available Python version
+        if command -v python3.10 &> /dev/null; then
+          PYTHON_CMD="python3.10"
+        elif command -v python3 &> /dev/null; then
+          PYTHON_CMD="python3"
+        else
+          echo "❌ No Python 3 found"
+          exit 1
+        fi
+        
+        echo "Using Python command: $PYTHON_CMD"
+        
+        # Install dependencies
+        $PYTHON_CMD -m pip install --user --upgrade pip
+        $PYTHON_CMD -m pip install --user pyyaml requests tabulate
+        
+        # Verify installations
+        $PYTHON_CMD -c "import yaml, requests, tabulate; print('✅ All dependencies installed successfully')"
+    
+    # Create scripts directory if it doesn't exist
+    - name: Ensure scripts directory exists
+      run: |
+        mkdir -p scripts
+        mkdir -p config
+        echo "📁 Directory structure created"
+    
+    # Run SUT Management - Ubuntu
+    - name: Run SUT Management - Ubuntu
+      if: github.event.inputs.runner_os == 'ubuntu-latest'
+      run: |
+        echo "🚀 Running SUT Management on Ubuntu..."
+        python scripts/sut_manager.py \
+          --action "${{ github.event.inputs.action }}" \
+          --sut-name "${{ github.event.inputs.sut_name }}" \
+          --sut-host "${{ github.event.inputs.sut_host }}" \
+          --sut-description "${{ github.event.inputs.sut_description }}" \
+          --cpu-family "${{ github.event.inputs.cpu_family }}" \
+          --os-type "${{ github.event.inputs.os_type }}" \
+          --labels "${{ github.event.inputs.labels }}" \
+          --github-token "${{ secrets.GITHUB_TOKEN }}" \
+          --repo "${{ github.repository }}"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    # Run SUT Management - CentOS
+    - name: Run SUT Management - CentOS
+      if: github.event.inputs.runner_os == 'CentOS-latest'
+      run: |
+        echo "🚀 Running SUT Management on CentOS..."
+        
+        # Determine Python command
+        if command -v python3.10 &> /dev/null; then
+          PYTHON_CMD="python3.10"
+        elif command -v python3 &> /dev/null; then
+          PYTHON_CMD="python3"
+        else
+          echo "❌ No Python 3 found"
+          exit 1
+        fi
+        
+        echo "Using Python: $PYTHON_CMD"
+        
+        # Add user pip bin to PATH
+        export PATH="$HOME/.local/bin:$PATH"
+        
+        $PYTHON_CMD scripts/sut_manager.py \
+          --action "${{ github.event.inputs.action }}" \
+          --sut-name "${{ github.event.inputs.sut_name }}" \
+          --sut-host "${{ github.event.inputs.sut_host }}" \
+          --sut-description "${{ github.event.inputs.sut_description }}" \
+          --cpu-family "${{ github.event.inputs.cpu_family }}" \
+          --os-type "${{ github.event.inputs.os_type }}" \
+          --labels "${{ github.event.inputs.labels }}" \
+          --github-token "${{ secrets.GITHUB_TOKEN }}" \
+          --repo "${{ github.repository }}"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    # Commit SUT configuration changes
+    - name: Commit SUT configuration changes
+      if: github.event.inputs.action == 'add_sut' || github.event.inputs.action == 'delete_sut' || github.event.inputs.action == 'update_sut'
+      run: |
+        echo "💾 Committing SUT configuration changes..."
+        
+        # Configure git
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Add the config file
+        git add config/suts.yaml
+        
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "ℹ️  No changes to commit"
+        else
+          echo "📝 Committing changes..."
+          git commit -m "SUT Management: ${{ github.event.inputs.action }} - ${{ github.event.inputs.sut_name }} [by ${{ github.actor }}]"
+          git push
+          echo "✅ Changes committed and pushed successfully"
+        fi
+    
+    # Display final status
+    - name: Display Final Status
+      if: always()
+      run: |
+        echo ""
+        echo "🎯 SUT Management Summary:"
+        echo "=========================="
+        echo "Action: ${{ github.event.inputs.action }}"
+        echo "SUT Name: ${{ github.event.inputs.sut_name }}"
+        echo "Runner OS: ${{ github.event.inputs.runner_os }}"
+        echo "Executed by: ${{ github.actor }}"
+        echo "Status: ${{ job.status }}"
+        echo ""
+        
+        if [ -f "config/suts.yaml" ]; then
+          echo "📄 Current SUT configuration file exists"
+          echo "File size: $(wc -c < config/suts.yaml) bytes"
+        else
+          echo "⚠️  SUT configuration file not found"
+        fi
