@@ -35,7 +35,35 @@ on:
         required: false
         type: string
         default: ''
+        
+      sut_port:
+        description: 'SSH Port (default: 22)'
+        required: false
+        type: string
+        default: '22'
       
+      sut_username:
+        description: 'SSH Username (required for add/update)'
+        required: false
+        type: string
+        default: ''
+      
+      sut_password:
+        description: '⚠️ SSH Password (will be stored as secret - use for initial setup only)'
+        required: false
+        type: string
+        default: ''
+      
+      auth_method:
+        description: 'Authentication Method'
+        type: choice
+        options:
+          - password
+          - ssh_key
+          - both
+        default: 'password'
+        required: false      
+        
       sut_description:
         description: 'SUT Description (optional)'
         required: false
@@ -97,9 +125,6 @@ jobs:
         else
           uname -a
         fi
-        echo ""
-        echo "🐍 Available Python versions:"
-        ls -la /usr/bin/python* 2>/dev/null || echo "Python not found in /usr/bin/"
     
     # Setup Python - Ubuntu
     - name: Setup Python - Ubuntu
@@ -108,33 +133,26 @@ jobs:
       with:
         python-version: ${{ env.PYTHON_VERSION }}
     
-    # Setup Python - CentOS (manual installation)
+    # Setup Python - CentOS
     - name: Setup Python - CentOS
       if: github.event.inputs.runner_os == 'CentOS-latest'
       run: |
         echo "🔧 Setting up Python on CentOS..."
         
-        # Check if Python 3.10 is already available
         if command -v python3.10 &> /dev/null; then
           echo "✅ Python 3.10 already installed"
           python3.10 --version
         elif command -v python3 &> /dev/null; then
           echo "✅ Using available Python 3"
           python3 --version
-          # Create symlink for consistency
           sudo ln -sf $(which python3) /usr/local/bin/python3.10 || true
         else
           echo "📦 Installing Python 3..."
-          # Install Python 3 on CentOS
           sudo yum update -y || sudo dnf update -y
           sudo yum install -y python3 python3-pip || sudo dnf install -y python3 python3-pip
-          
-          # Verify installation
           python3 --version
-          pip3 --version
         fi
         
-        # Set up pip
         python3 -m pip install --user --upgrade pip || pip3 install --user --upgrade pip
     
     # Install dependencies - Ubuntu
@@ -143,7 +161,7 @@ jobs:
       run: |
         echo "📦 Installing Python dependencies on Ubuntu..."
         python -m pip install --upgrade pip
-        pip install pyyaml requests tabulate
+        pip install pyyaml requests tabulate paramiko cryptography
     
     # Install dependencies - CentOS
     - name: Install dependencies - CentOS
@@ -151,7 +169,6 @@ jobs:
       run: |
         echo "📦 Installing Python dependencies on CentOS..."
         
-        # Use the available Python version
         if command -v python3.10 &> /dev/null; then
           PYTHON_CMD="python3.10"
         elif command -v python3 &> /dev/null; then
@@ -161,21 +178,34 @@ jobs:
           exit 1
         fi
         
-        echo "Using Python command: $PYTHON_CMD"
-        
-        # Install dependencies
         $PYTHON_CMD -m pip install --user --upgrade pip
-        $PYTHON_CMD -m pip install --user pyyaml requests tabulate
+        $PYTHON_CMD -m pip install --user pyyaml requests tabulate paramiko cryptography
         
         # Verify installations
-        $PYTHON_CMD -c "import yaml, requests, tabulate; print('✅ All dependencies installed successfully')"
+        $PYTHON_CMD -c "import yaml, requests, tabulate, paramiko; print('✅ All dependencies installed successfully')"
     
-    # Create scripts directory if it doesn't exist
-    - name: Ensure scripts directory exists
+    # Create directories
+    - name: Ensure directories exist
       run: |
-        mkdir -p scripts
-        mkdir -p config
+        mkdir -p scripts config .ssh-keys
         echo "📁 Directory structure created"
+    
+    # Store SUT password as secret (if provided)
+    - name: Store SUT Credentials as Secret
+      if: github.event.inputs.action == 'add_sut' && github.event.inputs.sut_password != ''
+      run: |
+        echo "🔐 Storing SUT credentials as repository secret..."
+        
+        # Create secret name based on SUT name
+        SECRET_NAME="SUT_PASSWORD_$(echo '${{ github.event.inputs.sut_name }}' | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+        
+        echo "Secret will be stored as: $SECRET_NAME"
+        echo "⚠️  Note: You'll need to manually add this secret in repository settings:"
+        echo "   Settings → Secrets and variables → Actions → New repository secret"
+        echo "   Name: $SECRET_NAME"
+        echo "   Value: [the password you entered]"
+        echo ""
+        echo "🔒 For security, the password is not automatically stored via API"
     
     # Run SUT Management - Ubuntu
     - name: Run SUT Management - Ubuntu
@@ -186,10 +216,14 @@ jobs:
           --action "${{ github.event.inputs.action }}" \
           --sut-name "${{ github.event.inputs.sut_name }}" \
           --sut-host "${{ github.event.inputs.sut_host }}" \
+          --sut-port "${{ github.event.inputs.sut_port }}" \
+          --sut-username "${{ github.event.inputs.sut_username }}" \
+          --auth-method "${{ github.event.inputs.auth_method }}" \
           --sut-description "${{ github.event.inputs.sut_description }}" \
           --cpu-family "${{ github.event.inputs.cpu_family }}" \
           --os-type "${{ github.event.inputs.os_type }}" \
           --labels "${{ github.event.inputs.labels }}" \
+          --sudo-required "${{ github.event.inputs.sudo_required }}" \
           --github-token "${{ secrets.GITHUB_TOKEN }}" \
           --repo "${{ github.repository }}"
       env:
@@ -201,7 +235,6 @@ jobs:
       run: |
         echo "🚀 Running SUT Management on CentOS..."
         
-        # Determine Python command
         if command -v python3.10 &> /dev/null; then
           PYTHON_CMD="python3.10"
         elif command -v python3 &> /dev/null; then
@@ -211,23 +244,47 @@ jobs:
           exit 1
         fi
         
-        echo "Using Python: $PYTHON_CMD"
-        
-        # Add user pip bin to PATH
         export PATH="$HOME/.local/bin:$PATH"
         
         $PYTHON_CMD scripts/sut_manager.py \
           --action "${{ github.event.inputs.action }}" \
           --sut-name "${{ github.event.inputs.sut_name }}" \
           --sut-host "${{ github.event.inputs.sut_host }}" \
+          --sut-port "${{ github.event.inputs.sut_port }}" \
+          --sut-username "${{ github.event.inputs.sut_username }}" \
+          --auth-method "${{ github.event.inputs.auth_method }}" \
           --sut-description "${{ github.event.inputs.sut_description }}" \
           --cpu-family "${{ github.event.inputs.cpu_family }}" \
           --os-type "${{ github.event.inputs.os_type }}" \
           --labels "${{ github.event.inputs.labels }}" \
+          --sudo-required "${{ github.event.inputs.sudo_required }}" \
           --github-token "${{ secrets.GITHUB_TOKEN }}" \
           --repo "${{ github.repository }}"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    # Test SSH Connection (if requested)
+    - name: Test SSH Connection
+      if: github.event.inputs.action == 'test_ssh_connection'
+      run: |
+        echo "🔌 Testing SSH connection to SUT..."
+        
+        # Get the appropriate Python command
+        if command -v python3.10 &> /dev/null; then
+          PYTHON_CMD="python3.10"
+        elif command -v python3 &> /dev/null; then
+          PYTHON_CMD="python3"
+        elif command -v python &> /dev/null; then
+          PYTHON_CMD="python"
+        else
+          echo "❌ No Python found"
+          exit 1
+        fi
+        
+        # Test SSH connection using the SUT manager
+        $PYTHON_CMD scripts/sut_manager.py \
+          --action "test_ssh_connection" \
+          --sut-name "${{ github.event.inputs.sut_name }}"
     
     # Commit SUT configuration changes
     - name: Commit SUT configuration changes
@@ -235,14 +292,11 @@ jobs:
       run: |
         echo "💾 Committing SUT configuration changes..."
         
-        # Configure git
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         
-        # Add the config file
         git add config/suts.yaml
         
-        # Check if there are changes to commit
         if git diff --staged --quiet; then
           echo "ℹ️  No changes to commit"
         else
@@ -251,6 +305,23 @@ jobs:
           git push
           echo "✅ Changes committed and pushed successfully"
         fi
+    
+    # Security reminder
+    - name: Security Reminder
+      if: github.event.inputs.action == 'add_sut' && github.event.inputs.sut_password != ''
+      run: |
+        echo ""
+        echo "🔐 SECURITY REMINDER:"
+        echo "===================="
+        echo "1. Manually add the SUT password as a repository secret:"
+        echo "   - Go to Settings → Secrets and variables → Actions"
+        echo "   - Click 'New repository secret'"
+        echo "   - Name: SUT_PASSWORD_$(echo '${{ github.event.inputs.sut_name }}' | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+        echo "   - Value: [the password you entered]"
+        echo ""
+        echo "2. Consider using SSH keys instead of passwords for better security"
+        echo "3. Ensure the SUT user has appropriate permissions for test execution"
+        echo ""
     
     # Display final status
     - name: Display Final Status
@@ -261,14 +332,10 @@ jobs:
         echo "=========================="
         echo "Action: ${{ github.event.inputs.action }}"
         echo "SUT Name: ${{ github.event.inputs.sut_name }}"
+        echo "SUT Host: ${{ github.event.inputs.sut_host }}"
+        echo "Username: ${{ github.event.inputs.sut_username }}"
+        echo "Auth Method: ${{ github.event.inputs.auth_method }}"
         echo "Runner OS: ${{ github.event.inputs.runner_os }}"
         echo "Executed by: ${{ github.actor }}"
         echo "Status: ${{ job.status }}"
-        echo ""
-        
-        if [ -f "config/suts.yaml" ]; then
-          echo "📄 Current SUT configuration file exists"
-          echo "File size: $(wc -c < config/suts.yaml) bytes"
-        else
-          echo "⚠️  SUT configuration file not found"
         fi
