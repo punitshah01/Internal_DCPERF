@@ -97,10 +97,27 @@ stop_tmc() {
 }
 
 get_default_input_file() {
-    # Look for common video files in the script directory
-    for ext in mp4 mkv avi mov; do
+    # Primary video file from Intel Artifactory
+    local primary_video="$SCRIPT_DIR/lg_4k_oled_paris_hevc_1920x1080_420_8_23.98_25.9.mkv"
+    
+    if [[ -f "$primary_video" ]]; then
+        echo "$primary_video"
+        return 0
+    fi
+    
+    # Look for fallback sample video
+    local fallback_video="$SCRIPT_DIR/sample_video.mp4"
+    if [[ -f "$fallback_video" ]]; then
+        log_info "Using fallback video file: sample_video.mp4"
+        echo "$fallback_video"
+        return 0
+    fi
+    
+    # Look for any existing video files in the script directory
+    for ext in mkv mp4 avi mov; do
         local file=$(find "$SCRIPT_DIR" -name "*.$ext" | head -1)
         if [[ -n "$file" ]]; then
+            log_info "Using existing video file: $(basename "$file")"
             echo "$file"
             return 0
         fi
@@ -109,12 +126,20 @@ get_default_input_file() {
     # If no video file found, create a test pattern
     local test_file="$SCRIPT_DIR/test_input.mp4"
     if [[ ! -f "$test_file" ]]; then
-        log_info "Creating test input video..."
-        ffmpeg -f lavfi -i testsrc2=duration=30:size=1920x1080:rate=30 -c:v libx264 -preset fast "$test_file" -y >/dev/null 2>&1 || {
+        log_info "No video file found. Creating test input video..."
+        log_info "This may take a few moments..."
+        
+        # Create a 30-second 1080p test pattern
+        ffmpeg -f lavfi -i testsrc2=duration=30:size=1920x1080:rate=30 \
+               -c:v libx264 -preset fast -crf 23 \
+               "$test_file" -y >/dev/null 2>&1 || {
             log_error "Failed to create test input video"
             return 1
         }
+        
+        log_info "Test input video created: $(basename "$test_file")"
     fi
+    
     echo "$test_file"
 }
 
