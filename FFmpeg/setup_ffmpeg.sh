@@ -334,25 +334,43 @@ verify_installation() {
 }
 
 download_sample_video() {
-    log_info "Downloading sample video file..."
+    local video_name="lg_4k_oled_paris_hevc_1920x1080_420_8_23.98_25.9.mkv"
+    local video_path="$video_name"
     
-    local sample_file="sample_4k_video.mp4"
-    
-    if [ -f "$sample_file" ]; then
-        log_info "Sample video already exists"
+    if [ -f "$video_path" ]; then
+        log_info "Video file already exists: $video_name"
         return 0
     fi
     
-    # Try to download a sample 4K video
-    wget "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_5mb.mp4" -O "$sample_file" || {
-        log_warning "Failed to download sample video. You can provide your own video file."
-        return 1
+    log_info "Downloading test video file: $video_name"
+    
+    # Primary source: Intel Artifactory
+    local artifactory_url="https://ubit-artifactory-ba.intel.com/artifactory/dcso_pnp_workspace-ba-local/WLS/FFmpeg/lg_4k_oled_paris_hevc_1920x1080_420_8_23.98_25.9.mkv"
+    
+    wget "$artifactory_url" -O "$video_path" || {
+        log_warning "Failed to download from Intel Artifactory. Trying fallback sources..."
+        
+        # Fallback: Public sample video
+        log_info "Downloading fallback sample video..."
+        wget "https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_5mb.mp4" -O "sample_video.mp4" || {
+            log_warning "Failed to download fallback video."
+            log_info "Will create test pattern video during benchmark execution"
+            return 1
+        }
+        
+        log_info "Fallback video downloaded as sample_video.mp4"
+        return 0
     }
     
-    log_info "Sample video downloaded: $sample_file"
-    return 0
+    if [ -f "$video_path" ]; then
+        local file_size=$(du -h "$video_path" | cut -f1)
+        log_info "Video file downloaded successfully: $video_name ($file_size)"
+        return 0
+    else
+        log_error "Failed to download video file"
+        return 1
+    fi
 }
-
 print_usage() {
     echo -e "
 Usage: $0 [OPTIONS]
