@@ -19,6 +19,7 @@ DEFAULT_EMON_GROUP="superpi"
 
 # ------------------------------ VARIABLES -----------------------------------
 cores=""
+cpu_cores=""  # For wrapper compatibility
 scale=$DEFAULT_SCALE
 runs=$DEFAULT_RUNS
 metric_collection="none"  # none, emon
@@ -29,13 +30,19 @@ emon_user=$DEFAULT_EMON_USER
 emon_server=$DEFAULT_EMON_SERVER
 emon_group=$DEFAULT_EMON_GROUP
 
+# Get script directory for output files
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESULTS_FILE="$SCRIPT_DIR/results.csv"
+
 # ------------------------------ FUNCTIONS -----------------------------------
 print_usage(){
     echo -e "
 Usage: $0 --cores N [OPTIONS]
+   or: $0 --cpu-cores RANGE [OPTIONS]  (for wrapper compatibility)
 
 REQUIRED:
   --cores N              Number of cores to use (REQUIRED)
+  --cpu-cores RANGE      CPU core range (e.g., 0-7 or 0,2,4) - wrapper format
 
 OPTIONAL:
   --scale N              Pi calculation scale (default: $DEFAULT_SCALE)
@@ -51,8 +58,28 @@ EMON OPTIONS (with defaults):
 
 EXAMPLES:
   $0 --cores 8 --scale 5000 --runs 3
+  $0 --cpu-cores 0-7 --name custom_test
   $0 --cores 32 --name custom_test
 "
+}
+
+# Parse CPU cores range to get core count
+parse_cpu_cores() {
+    local cpu_range="$1"
+    
+    if [[ "$cpu_range" =~ ^[0-9]+-[0-9]+$ ]]; then
+        # Range format: 0-7
+        local start=$(echo "$cpu_range" | cut -d'-' -f1)
+        local end=$(echo "$cpu_range" | cut -d'-' -f2)
+        cores=$((end - start + 1))
+    elif [[ "$cpu_range" =~ ^[0-9,]+$ ]]; then
+        # List format: 0,2,4,6
+        cores=$(echo "$cpu_range" | tr ',' '\n' | wc -l)
+    else
+        echo "Error: Invalid CPU cores format: $cpu_range"
+        echo "Use format like '0-7' or '0,2,4,6'"
+        exit 1
+    fi
 }
 
 setup_system() {
@@ -69,6 +96,9 @@ setup_system() {
         echo "Error: taskset command not found. Please install util-linux package."
         exit 1
     fi
+    
+    # Create results directory
+    mkdir -p "$SCRIPT_DIR/result"
 }
 
 run_single_pi_calculation() {
@@ -128,7 +158,7 @@ parse_superpi_results() {
         fi
     fi
     
-    # Output in parseable format
+    # Output in parseable format for wrapper
     echo "Performance: $avg_time seconds"
     echo "Throughput: $avg_time seconds"
     echo "Test_Type: $test_type"
@@ -139,6 +169,9 @@ parse_superpi_results() {
         echo "Max_Time: $max_time seconds"
         echo "Min_Time: $min_time seconds"
     fi
+    
+    # Create CSV output
+    create_csv_output "$cores" "$avg_time" "$test_type"
 }
 
 run_superpi_benchmark() {
@@ -158,7 +191,7 @@ run_superpi_benchmark() {
         session_name="${session_name}_WEMON"
     fi
     
-    local results_dir="result/pi_${timestamp}"
+    local results_dir="$SCRIPT_DIR/result/pi_${timestamp}"
     local test_dir=""
     
     if [[ $cores -eq 1 ]]; then
@@ -234,26 +267,27 @@ run_superpi_benchmark() {
     return 0
 }
 
-create_excel_output() {
+create_csv_output() {
     local cores=$1
     local avg_time=$2
     local test_type=$3
     
     local date_str=$(date '+%Y-%m-%d %H:%M:%S')
     local workload_name="Super Pi"
-    local testcase="${cores}cores_scale${scale}"
+    local testcase="${cores}cores_scale${scale}_${test_type}"
     local command="echo 'scale=${scale}; 4*a(1)' | bc -l"
     local kpi="Calculation Time"
-    local score="$avg_time seconds"
+    local score="$avg_time"
     
     # Create CSV header if file doesn't exist
-    local csv_file="superpi_results.csv"
-    if [[ ! -f "$csv_file" ]]; then
-        echo "Date,Workload Name,Test Case,Command,KPI,Score" > "$csv_file"
+    if [[ ! -f "$RESULTS_FILE" ]]; then
+        echo "Date,Workload Name,Test Case,Command,KPI,Score" > "$RESULTS_FILE"
     fi
     
     # Append result
-    echo "$date_str,$workload_name,$testcase,$command,$kpi,$score" >> "$csv_file"
+    echo "$date_str,$workload_name,$testcase,$command,$kpi,$score" >> "$RESULTS_FILE"
+    
+    echo "Results saved to: $RESULTS_FILE"
 }
 
 # ------------------------------ ARGUMENT PARSING -----------------------------------
@@ -261,6 +295,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --cores)
             cores="$2"
+            shift 2
+            ;;
+        --cpu-cores)
+            cpu_cores="$2"
             shift 2
             ;;
         --scale)
@@ -304,8 +342,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ------------------------------ VALIDATION -----------------------------------
+
+# Handle wrapper compatibility
+if [[ -n "$cpu_cores" ]]; then
+    parse_cpu_cores "$cpu_cores"
+fi
+
 if [[ -z "$cores" ]]; then
-    echo "Error: --cores parameter is required"
+    echo "Error: --cores or --cpu-cores parameter is required"
     print_usage
     exit 1
 fi
@@ -329,6 +373,8 @@ fi
 echo "============================================="
 echo "SUPER PI BENCHMARK"
 echo "============================================="
+echo "Script Directory: $SCRIPT_DIR"
+echo "Results File: $RESULTS_FILE"
 echo "Cores: $cores"
 echo "Scale: $scale"
 echo "Runs: $runs"
@@ -369,4 +415,5 @@ echo "============================================="
 echo "Total runs: $runs"
 echo "Successful runs: $successful_runs"
 echo "Failed runs: $((runs - successful_runs))"
+echo "Results saved to: $RESULTS_FILE"
 echo "============================================="
