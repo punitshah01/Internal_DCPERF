@@ -1,0 +1,13 @@
+# Workload Configuration File
+# Format: workload_name|customer_name|metric_unit|metric_type|test_type|notes
+# Lines starting with # are comments
+
+SuperPi|Intel|seconds|Latency|corescaling|Super Pi calculation benchmark
+stream|AMD|MB/s|Throughput|corescaling|Memory bandwidth benchmark
+Sysbench|Generic|ops/s|Throughput|corescaling|System performance benchmark
+Stress-ng|Generic|bogo ops/s|Throughput|corescaling|System stress testing
+FFmpeg|Media|fps|Throughput|corescaling|Video encoding benchmark
+Crypto256|Security|MB/s|Throughput|corescaling|Cryptographic performance
+Multichase|Memory|ns|Latency|corescaling|Memory latency benchmark
+Linpack|HPC|GFLOPS|Throughput|corescaling|High performance computing
+Specjbb|Enterprise|ops/s|Throughput|corescaling|Java business benchmark
