@@ -247,34 +247,23 @@ else
     fi
 fi
 
-# Calculate throughput (calculations per second)
-if [[ "\$RESULT" =~ ^[0-9]+\.?[0-9]*\$ ]] && (( \$(echo "\$RESULT > 0" | bc -l) )); then
-    THROUGHPUT=\$(echo "scale=6; 1 / \$RESULT" | bc)
-else
-    THROUGHPUT="N/A"
-fi
-
 # Create workload_result.txt in the EMON output directory
-# This format is critical for metrics server integration
+# Format matches the metrics server expectation exactly
 cat > "\$EMON_OUTPUT_DIR/workload_result.txt" << EOFRESULT
 workload_name:"Super Pi \$CORES cores scale \$SCALE"
-metric_type:"Throughput"
-result:"\$THROUGHPUT"
-metric:"calculations/sec"
-latency:"\$RESULT"
-latency_metric:"seconds"
+metric_type:"Latency"
+result:"\$RESULT"
+metric:"seconds"
 num_instances:1
 sockets:\$(lscpu | grep "Socket(s):" | awk '{print \$2}' || echo "1")
 cores_used:\$CORES
 total_cores:\$(nproc)
 scale:\$SCALE
-session_name:"\$SESSION_NAME"
-notes:"Super Pi calculation with scale=\$SCALE on \$CORES cores, avg time=\$RESULT sec"
+notes:"Super Pi calculation with scale=\$SCALE on \$CORES cores, execution time=\$RESULT seconds"
 EOFRESULT
 
 echo "SuperPi calculation completed under EMON monitoring"
-echo "Average Time: \$RESULT seconds"
-echo "Throughput: \$THROUGHPUT calculations/sec"
+echo "SuperPi Score (Execution Time): \$RESULT seconds"
 echo "Workload result file created: \$EMON_OUTPUT_DIR/workload_result.txt"
 
 # Also create a summary file for easy reading
@@ -283,10 +272,10 @@ cat > "\$EMON_OUTPUT_DIR/benchmark_summary.txt" << EOFSUMMARY
 Session: \$SESSION_NAME
 Cores: \$CORES
 Scale: \$SCALE
-Average Time: \$RESULT seconds
-Throughput: \$THROUGHPUT calculations/sec
+SuperPi Score: \$RESULT seconds
 Date: \$(date '+%Y-%m-%d %H:%M:%S')
 Hostname: \$(hostname)
+Notes: Lower time is better performance
 EOFSUMMARY
 EOF
     
@@ -489,6 +478,7 @@ run_superpi_benchmark() {
             if [[ "$emon_upload" == true ]]; then
                 log "Data uploaded to metrics server: $emon_server"
                 log "Session name on server: $session_name"
+                log "SuperPi Score (execution time) will appear in Score/TPS column: $avg_time seconds"
                 log "Check metrics dashboard for results under session: $session_name"
             else
                 log "Data saved locally. Use --emon-upload to upload to metrics server."
@@ -729,7 +719,7 @@ if [[ "$enable_emon" == true ]]; then
     if [[ "$emon_upload" == true ]]; then
         echo "Data uploaded to metrics server: $emon_server"
         echo "Session name on server: $emon_session"
-        echo "Check the metrics dashboard for workload results"
+        echo "SuperPi execution time will appear in Score/TPS column on metrics dashboard"
     else
         echo "Data saved locally only. Use --emon-upload to upload to server."
     fi
