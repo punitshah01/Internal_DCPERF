@@ -1,5 +1,5 @@
 #!/bin/bash
-# superpi_workload.sh - Super Pi benchmark script for main wrapper
+# superpi.sh - Super Pi benchmark script for main wrapper
 
 # =============================================================================
 # SUPER PI WORKLOAD SCRIPT
@@ -343,7 +343,7 @@ done
 
 # ------------------------------ VALIDATION -----------------------------------
 
-# Handle wrapper compatibility
+# Handle wrapper compatibility - parse cpu-cores range
 if [[ -n "$cpu_cores" ]]; then
     parse_cpu_cores "$cpu_cores"
 fi
