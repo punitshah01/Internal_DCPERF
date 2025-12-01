@@ -640,6 +640,14 @@ done
 # Handle wrapper compatibility - parse cpu-cores range
 if [[ -n "$cpu_cores" ]]; then
     parse_cpu_cores "$cpu_cores"
+    
+    # Detect wrapper execution and handle EMON conflicts
+    if [[ "$enable_emon" == true ]]; then
+        log "WARNING: Detected execution through wrapper with internal EMON enabled."
+        log "Disabling internal EMON to avoid conflicts with wrapper's EMON integration."
+        log "Use wrapper's --emon flag instead for EMON monitoring."
+        enable_emon=false
+    fi
 fi
 
 if [[ -z "$cores" ]]; then
