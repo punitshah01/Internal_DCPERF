@@ -270,49 +270,49 @@ AVAILABLE WORKLOADS:
     def create_system_info_file(self, output_dir: Path, cores: int):
         """Create system information file"""
         system_info_content = f"""# System Configuration
-timestamp: "{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-hostname: "{os.uname().nodename}"
-bios_version: "{self.system_info['bios']}"
-microcode: "{self.system_info['microcode']}"
-operating_system: "{self.system_info['operating_system']}"
-kernel: "{self.system_info['kernel']}"
-cpu_model: "{self.system_info['cpu_model_name']}"
-cpu_family: "{self.system_info['family']}"
-cpu_model_num: "{self.system_info['model']}"
-cpu_stepping: "{self.system_info['stepping']}"
-total_cores: {self.system_info['total_cores']}
-cores_per_socket: {self.system_info['cores_per_socket']}
-total_sockets: {self.system_info['total_sockets']}
-numa_nodes: {self.system_info['total_numa_nodes']}
-test_cores: {cores}
-workload_script: "{self.script_path}"
-script_args: "{self.script_args}"
-"""
+        timestamp: "{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        hostname: "{os.uname().nodename}"
+        bios_version: "{self.system_info['bios']}"
+        microcode: "{self.system_info['microcode']}"
+        operating_system: "{self.system_info['operating_system']}"
+        kernel: "{self.system_info['kernel']}"
+        cpu_model: "{self.system_info['cpu_model_name']}"
+        cpu_family: "{self.system_info['family']}"
+        cpu_model_num: "{self.system_info['model']}"
+        cpu_stepping: "{self.system_info['stepping']}"
+        total_cores: {self.system_info['total_cores']}
+        cores_per_socket: {self.system_info['cores_per_socket']}
+        total_sockets: {self.system_info['total_sockets']}
+        numa_nodes: {self.system_info['total_numa_nodes']}
+        test_cores: {cores}
+        workload_script: "{self.script_path}"
+        script_args: "{self.script_args}"
+        """
         
         if self.enable_emon:
             system_info_content += f"""emon_user: "{self.emon_user}"
-emon_group: "{self.emon_group}"
-emon_session: "{self.emon_session}"
-emon_server: "{self.emon_server}"
-"""
+            emon_group: "{self.emon_group}"
+            emon_session: "{self.emon_session}"
+            emon_server: "{self.emon_server}"
+            """
         
         with open(output_dir / "system_info.txt", 'w') as f:
             f.write(system_info_content)
 
     def create_workload_result_file(self, output_dir: Path, cores: int, performance_result: str):
         """Create workload result file"""
-        workload_result_content = f"""workload_name:"{self.workload_name}"
-metric_type:"{self.metric_type}"
-result:"{performance_result}"
-metric:"{self.metric_unit}"
-num_instances:1
-sockets:{self.system_info['total_sockets']}
-cores_used:{cores}
-total_cores:{self.system_info['total_cores']}
-notes:"Core scaling test with {cores} cores using {Path(self.script_path).name}"
-test_date:"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-hostname:"{os.uname().nodename}"
-"""
+            workload_result_content = f"""workload_name:"{self.workload_name}"
+            metric_type:"{self.metric_type}"
+            result:"{performance_result}"
+            metric:"{self.metric_unit}"
+            num_instances:1
+            sockets:{self.system_info['total_sockets']}
+            cores_used:{cores}
+            total_cores:{self.system_info['total_cores']}
+            notes:"Core scaling test with {cores} cores using {Path(self.script_path).name}"
+            test_date:"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            hostname:"{os.uname().nodename}"
+        """
         
         with open(output_dir / "workload_result.txt", 'w') as f:
             f.write(workload_result_content)
@@ -364,131 +364,131 @@ hostname:"{os.uname().nodename}"
         return "N/A"
 
     def run_workload_with_cores(self, cores: int):
-    """Run workload with specified number of cores"""
-    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    workload_basename = Path(self.script_path).parent.name
-    run_id = f"{workload_basename}_{cores}cores_{timestamp}"
-    output_dir = Path(self.emon_output_dir) / run_id
-    
-    print("=" * 50)
-    print(f"Running {workload_basename} with {cores} cores")
-    print(f"Output directory: {output_dir}")
-    print("=" * 50)
-    
-    # Create output directory
-    if not self.dry_run:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        # Create system info file
-        self.create_system_info_file(output_dir, cores)
-    
-    # Prepare workload command - use absolute path to avoid issues
-    script_abs_path = Path(self.script_path).resolve()
-    workload_cmd = f"{script_abs_path} --cpu-cores 0-{cores-1}"
-    
-    # Add additional script arguments if provided
-    if self.script_args:
-        workload_cmd += f" {self.script_args}"
-    
-    output_file = output_dir / "workload_output.log" if not self.dry_run else Path("/dev/null")
-    
-    if self.enable_emon:
-        # TMC command - use absolute paths and proper quoting
-        tmc_cmd = f"python3 /root/tmc/tmc.py -c \"{workload_cmd}\" -d \"{output_dir.absolute()}\" -n"
+        """Run workload with specified number of cores"""
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        workload_basename = Path(self.script_path).parent.name
+        run_id = f"{workload_basename}_{cores}cores_{timestamp}"
+        output_dir = Path(self.emon_output_dir) / run_id
         
-        # Add optional parameters only if provided
-        if self.emon_user:
-            tmc_cmd += f" -x \"{self.emon_user}\""
+        print("=" * 50)
+        print(f"Running {workload_basename} with {cores} cores")
+        print(f"Output directory: {output_dir}")
+        print("=" * 50)
         
-        if self.emon_group:
-            tmc_cmd += f" -G \"{self.emon_group}\""
-        
-        if self.emon_session:
-            tmc_cmd += f" -i \"{self.emon_session}_{cores}cores\""
-        
-        if self.emon_duration > 0:
-            tmc_cmd += f" -t {self.emon_duration}"
-        
-        tmc_cmd += f" -w \"{self.emon_chart_views}\""
-        
-        print(f"TMC Command: {tmc_cmd}")
-        
+        # Create output directory
         if not self.dry_run:
-            print("Executing with TMC/EMON...")
-            try:
-                # Check if TMC script exists
-                tmc_script = Path("/root/tmc/tmc.py")
-                if not tmc_script.exists():
-                    print(f"Error: TMC script not found at {tmc_script}")
-                    print("Please check TMC installation path")
-                    return
-                
-                # Check if workload script exists and is executable
-                if not script_abs_path.exists():
-                    print(f"Error: Workload script not found at {script_abs_path}")
-                    return
-                
-                if not os.access(script_abs_path, os.X_OK):
-                    print(f"Error: Workload script is not executable: {script_abs_path}")
-                    print(f"Try: chmod +x {script_abs_path}")
-                    return
-                
-                with open(output_file, 'w') as f:
-                    result = subprocess.run(tmc_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT, 
-                                          cwd=Path(self.script_path).parent)
-                exit_code = result.returncode
-            except Exception as e:
-                print(f"Error executing TMC command: {e}")
-                exit_code = 1
-        else:
-            print("DRY RUN: Would execute TMC command above")
-            exit_code = 0
-    else:
-        # Direct workload execution
-        print(f"Workload Command: {workload_cmd}")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            # Create system info file
+            self.create_system_info_file(output_dir, cores)
         
-        if not self.dry_run:
-            print("Executing workload directly...")
-            try:
-                # Check if workload script exists and is executable
-                if not script_abs_path.exists():
-                    print(f"Error: Workload script not found at {script_abs_path}")
-                    return
-                
-                if not os.access(script_abs_path, os.X_OK):
-                    print(f"Error: Workload script is not executable: {script_abs_path}")
-                    print(f"Try: chmod +x {script_abs_path}")
-                    return
-                
-                with open(output_file, 'w') as f:
-                    result = subprocess.run(workload_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT,
-                                          cwd=Path(self.script_path).parent)
-                exit_code = result.returncode
-            except Exception as e:
-                print(f"Error executing workload command: {e}")
-                exit_code = 1
-        else:
-            print("DRY RUN: Would execute workload command above")
-            exit_code = 0
-    
-    # Process results if not dry run
-    if not self.dry_run and exit_code == 0:
+        # Prepare workload command - use absolute path to avoid issues
+        script_abs_path = Path(self.script_path).resolve()
+        workload_cmd = f"{script_abs_path} --cpu-cores 0-{cores-1}"
+        
+        # Add additional script arguments if provided
+        if self.script_args:
+            workload_cmd += f" {self.script_args}"
+        
+        output_file = output_dir / "workload_output.log" if not self.dry_run else Path("/dev/null")
+        
         if self.enable_emon:
-            # Parse performance output and create workload result file
-            perf_result = self.parse_performance_output(output_file)
-            self.create_workload_result_file(output_dir, cores, perf_result)
-            print(f"Performance result: {perf_result} {self.metric_unit}")
-        print(f"Results saved to: {output_dir}")
-    elif not self.dry_run:
-        print(f"Warning: Workload execution failed with exit code {exit_code}")
-        if exit_code == 126:
-            print("Exit code 126 usually means 'Permission denied' or 'Command not executable'")
-            print(f"Check if the script is executable: ls -la {script_abs_path}")
-            print(f"Make it executable with: chmod +x {script_abs_path}")
-        elif exit_code == 127:
-            print("Exit code 127 usually means 'Command not found'")
-            print(f"Check if the script path is correct: {script_abs_path}")
-    
-    print()
+            # TMC command - use absolute paths and proper quoting
+            tmc_cmd = f"python3 /root/tmc/tmc.py -c \"{workload_cmd}\" -d \"{output_dir.absolute()}\" -n"
+            
+            # Add optional parameters only if provided
+            if self.emon_user:
+                tmc_cmd += f" -x \"{self.emon_user}\""
+            
+            if self.emon_group:
+                tmc_cmd += f" -G \"{self.emon_group}\""
+            
+            if self.emon_session:
+                tmc_cmd += f" -i \"{self.emon_session}_{cores}cores\""
+            
+            if self.emon_duration > 0:
+                tmc_cmd += f" -t {self.emon_duration}"
+            
+            tmc_cmd += f" -w \"{self.emon_chart_views}\""
+            
+            print(f"TMC Command: {tmc_cmd}")
+            
+            if not self.dry_run:
+                print("Executing with TMC/EMON...")
+                try:
+                    # Check if TMC script exists
+                    tmc_script = Path("/root/tmc/tmc.py")
+                    if not tmc_script.exists():
+                        print(f"Error: TMC script not found at {tmc_script}")
+                        print("Please check TMC installation path")
+                        return
+                    
+                    # Check if workload script exists and is executable
+                    if not script_abs_path.exists():
+                        print(f"Error: Workload script not found at {script_abs_path}")
+                        return
+                    
+                    if not os.access(script_abs_path, os.X_OK):
+                        print(f"Error: Workload script is not executable: {script_abs_path}")
+                        print(f"Try: chmod +x {script_abs_path}")
+                        return
+                    
+                    with open(output_file, 'w') as f:
+                        result = subprocess.run(tmc_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT, 
+                                              cwd=Path(self.script_path).parent)
+                    exit_code = result.returncode
+                except Exception as e:
+                    print(f"Error executing TMC command: {e}")
+                    exit_code = 1
+            else:
+                print("DRY RUN: Would execute TMC command above")
+                exit_code = 0
+        else:
+            # Direct workload execution
+            print(f"Workload Command: {workload_cmd}")
+            
+            if not self.dry_run:
+                print("Executing workload directly...")
+                try:
+                    # Check if workload script exists and is executable
+                    if not script_abs_path.exists():
+                        print(f"Error: Workload script not found at {script_abs_path}")
+                        return
+                    
+                    if not os.access(script_abs_path, os.X_OK):
+                        print(f"Error: Workload script is not executable: {script_abs_path}")
+                        print(f"Try: chmod +x {script_abs_path}")
+                        return
+                    
+                    with open(output_file, 'w') as f:
+                        result = subprocess.run(workload_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT,
+                                              cwd=Path(self.script_path).parent)
+                    exit_code = result.returncode
+                except Exception as e:
+                    print(f"Error executing workload command: {e}")
+                    exit_code = 1
+            else:
+                print("DRY RUN: Would execute workload command above")
+                exit_code = 0
+        
+        # Process results if not dry run
+        if not self.dry_run and exit_code == 0:
+            if self.enable_emon:
+                # Parse performance output and create workload result file
+                perf_result = self.parse_performance_output(output_file)
+                self.create_workload_result_file(output_dir, cores, perf_result)
+                print(f"Performance result: {perf_result} {self.metric_unit}")
+            print(f"Results saved to: {output_dir}")
+        elif not self.dry_run:
+            print(f"Warning: Workload execution failed with exit code {exit_code}")
+            if exit_code == 126:
+                print("Exit code 126 usually means 'Permission denied' or 'Command not executable'")
+                print(f"Check if the script is executable: ls -la {script_abs_path}")
+                print(f"Make it executable with: chmod +x {script_abs_path}")
+            elif exit_code == 127:
+                print("Exit code 127 usually means 'Command not found'")
+                print(f"Check if the script path is correct: {script_abs_path}")
+        
+        print()
 
     def set_performance_governor(self):
         """Set CPU governor to performance"""
