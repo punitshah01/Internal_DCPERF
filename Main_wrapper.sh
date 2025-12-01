@@ -1007,6 +1007,10 @@ while [[ $# -gt 0 ]]; do
             dry_run=true
             shift
             ;;
+        --workload-name)
+            workload_name="$2"
+            shift 2
+            ;;
         -e|--emon)
             enable_emon=true
             shift
