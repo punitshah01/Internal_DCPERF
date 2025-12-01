@@ -10,8 +10,7 @@
 set -euo pipefail
 
 # ------------------------------ DEFAULT VALUES -----------------------------------
-DEFAULT_CORES_STEP=8
-DEFAULT_METRIC_TYPE="NA"
+DEFAULT_CORES_STEP=4
 DEFAULT_EMON_CHART_VIEWS="core,socket"
 DEFAULT_EMON_OUTPUT_DIR="./emon_traces"
 DEFAULT_EMON_DURATION=0
@@ -34,8 +33,10 @@ emon_group=""
 emon_session=""
 emon_server=""
 workload_name=""
-metric_type=$DEFAULT_METRIC_TYPE
+customer_name=""
 metric_unit=""
+metric_type=""
+test_type="corescaling"
 emon_duration=$DEFAULT_EMON_DURATION
 emon_chart_views=$DEFAULT_EMON_CHART_VIEWS
 emon_output_dir=$DEFAULT_EMON_OUTPUT_DIR
@@ -55,12 +56,21 @@ kernel_version=""
 
 # Master results file
 MASTER_RESULTS_FILE="$SCRIPT_DIR/master_results.xlsx"
-MASTER_CSV_FILE="$SCRIPT_DIR/master_results.csv"
+WORKLOAD_CONFIG_FILE="$SCRIPT_DIR/workload_config.txt"
+
+# Debug mode
+DEBUG_MODE=false
 
 # ------------------------------ FUNCTIONS -----------------------------------
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+}
+
+debug_log() {
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "[DEBUG $(date '+%H:%M:%S')] $1"
+    fi
 }
 
 error_exit() {
@@ -87,10 +97,11 @@ TMC/EMON INTEGRATION:
   --emon-server SERVER       Server identifier (optional, workload script default used)
   --emon-session SESSION     TMC session identifier (required if --emon)
 
-WORKLOAD RESULTS:
-  --workload-name NAME       Workload name for results file (required if --emon)
-  --metric-type TYPE         Metric type: Throughput/Latency/etc (default: $DEFAULT_METRIC_TYPE)
-  --metric-unit UNIT         Metric unit: ops/s, ms, GFLOPS, etc (required if --emon)
+WORKLOAD CONFIGURATION:
+  --customer-name NAME       Customer name (overrides config file)
+  --test-type TYPE           Test type: corescaling/individual (default: corescaling)
+  --metric-unit UNIT         Metric unit (overrides config file)
+  --metric-type TYPE         Metric type (overrides config file)
 
 SCRIPT PARAMETERS:
   --script-args "ARGS"       Additional arguments to pass to workload script
@@ -100,38 +111,33 @@ TMC OPTIONAL:
   --emon-chart-views VIEWS   Chart views (default: $DEFAULT_EMON_CHART_VIEWS)
   --emon-output-dir DIR      Base output directory (default: $DEFAULT_EMON_OUTPUT_DIR)
 
+DEBUG:
+  --debug                    Enable debug mode for troubleshooting
+
+CONFIGURATION FILE:
+  Edit $WORKLOAD_CONFIG_FILE to configure workload settings.
+  Format: workload_name|customer_name|metric_unit|metric_type|test_type|notes
+
 EXAMPLES:
-  # Basic execution
+  # Basic SuperPi execution
   $0 --script ./SuperPi/superpi.sh --cores 8
 
-  # Dry run to check commands
-  $0 --script ./SuperPi/superpi.sh --cores 8 --dry-run
+  # With custom customer name
+  $0 --script ./SuperPi/superpi.sh --cores 8 --customer-name "MyCompany"
 
-  # Execution with specific nproc
-  $0 --script ./SuperPi/superpi.sh --nproc 32
+  # Individual run instead of core scaling
+  $0 --script ./SuperPi/superpi.sh --nproc 32 --test-type individual
+
+  # With debug mode
+  $0 --script ./SuperPi/superpi.sh --cores 8 --debug
 
   # With EMON integration
   $0 --script ./SuperPi/superpi.sh --cores 4 --emon \\
-     --emon-session "superpi_test" --workload-name "SuperPi" --metric-unit "seconds"
-
-  # With additional script arguments
-  $0 --script ./SuperPi/superpi.sh --cores 8 \\
-     --script-args "--scale 10000 --runs 3"
-
-AVAILABLE WORKLOADS:
-  Look for workload scripts in subdirectories:
-  - ./SuperPi/superpi.sh
-  - ./FFmpeg/ffmpeg.sh
-  - ./Multichase/multichase.sh
-  - ./Crypto256/crypto256.sh
-  - ./Schbench/schbench.sh
-  - ./MySQL(sysbench)/sysbench.sh
-  - ./Mediawiki/workload.sh
-  - ./Feedsim/workload.sh
+     --emon-session "superpi_test" --customer-name "Intel"
 
 RESULTS:
   Master results are saved to: $MASTER_RESULTS_FILE
-  CSV backup is saved to: $MASTER_CSV_FILE
+  Configuration file: $WORKLOAD_CONFIG_FILE
 EOF
 }
 
@@ -154,16 +160,22 @@ get_system_info() {
         cpu_model_name="Unknown"
     fi
     
-    # Get BIOS version
+    # Get BIOS version - Fixed to handle multiline output
     if command -v dmidecode >/dev/null 2>&1; then
-        bios_version=$(dmidecode -t bios 2>/dev/null | grep "Version:" | head -1 | cut -d':' -f2 | sed 's/^[[:space:]]*//' || echo "Unknown")
+        bios_version=$(dmidecode -t bios 2>/dev/null | grep "Version:" | head -1 | cut -d':' -f2 | sed 's/^[[:space:]]*//' | tr -d '\n' || echo "Unknown")
+        if [[ -z "$bios_version" || "$bios_version" == " " ]]; then
+            bios_version="Unknown"
+        fi
     else
         bios_version="Unknown"
     fi
     
-    # Get microcode
+    # Get microcode - Fixed to handle multiline output
     if [[ -f /proc/cpuinfo ]]; then
-        microcode=$(grep "microcode" /proc/cpuinfo | head -1 | cut -d':' -f2 | sed 's/^[[:space:]]*//' || echo "Unknown")
+        microcode=$(grep "microcode" /proc/cpuinfo | head -1 | cut -d':' -f2 | sed 's/^[[:space:]]*//' | tr -d '\n' || echo "Unknown")
+        if [[ -z "$microcode" || "$microcode" == " " ]]; then
+            microcode="Unknown"
+        fi
     else
         microcode="Unknown"
     fi
@@ -179,6 +191,62 @@ get_system_info() {
     kernel_version=$(uname -r)
     
     log "System info gathered: $total_cores cores, $total_sockets sockets, $total_numa_nodes NUMA nodes"
+    debug_log "BIOS: '$bios_version', Microcode: '$microcode'"
+}
+
+load_workload_config() {
+    local workload_basename="$1"
+    
+    debug_log "Loading config for workload: $workload_basename"
+    
+    # Check if config file exists
+    if [[ ! -f "$WORKLOAD_CONFIG_FILE" ]]; then
+        log "Warning: Configuration file not found: $WORKLOAD_CONFIG_FILE"
+        log "Using default values. Create the config file to customize workload settings."
+    else
+        # Read configuration for this workload
+        while IFS='|' read -r wl_name cust_name met_unit met_type tst_type notes; do
+            # Skip comments and empty lines
+            if [[ "$wl_name" =~ ^#.*$ ]] || [[ -z "$wl_name" ]]; then
+                continue
+            fi
+            
+            # Match workload name (case insensitive)
+            if [[ "${wl_name,,}" == "${workload_basename,,}" ]]; then
+                debug_log "Found config match for: $workload_basename"
+                
+                # Only set values if not already provided via command line
+                if [[ -z "$customer_name" ]]; then
+                    customer_name="$cust_name"
+                fi
+                if [[ -z "$metric_unit" ]]; then
+                    metric_unit="$met_unit"
+                fi
+                if [[ -z "$metric_type" ]]; then
+                    metric_type="$met_type"
+                fi
+                if [[ "$test_type" == "corescaling" ]]; then
+                    test_type="$tst_type"
+                fi
+                
+                debug_log "Loaded config: customer=$customer_name, unit=$metric_unit, type=$metric_type, test=$test_type"
+                return 0
+            fi
+        done < "$WORKLOAD_CONFIG_FILE"
+    fi
+    
+    # Set defaults if no config found
+    if [[ -z "$customer_name" ]]; then
+        customer_name="Generic"
+    fi
+    if [[ -z "$metric_unit" ]]; then
+        metric_unit="units"
+    fi
+    if [[ -z "$metric_type" ]]; then
+        metric_type="Performance"
+    fi
+    
+    debug_log "Using defaults: customer=$customer_name, unit=$metric_unit, type=$metric_type, test=$test_type"
 }
 
 validate_emon_params() {
@@ -186,12 +254,6 @@ validate_emon_params() {
     
     if [[ -z "$emon_session" ]]; then
         missing_params+=("--emon-session")
-    fi
-    if [[ -z "$workload_name" ]]; then
-        missing_params+=("--workload-name")
-    fi
-    if [[ -z "$metric_unit" ]]; then
-        missing_params+=("--metric-unit")
     fi
     
     if [[ ${#missing_params[@]} -gt 0 ]]; then
@@ -254,6 +316,7 @@ get_core_list() {
             error_exit "Specified nproc ($specific_nproc) exceeds available cores ($total_cores)"
         fi
         core_list=($specific_nproc)
+        test_type="individual"
     else
         for ((i=cores_step; i<=total_cores; i+=cores_step)); do
             core_list+=($i)
@@ -263,6 +326,7 @@ get_core_list() {
         if [[ $((total_cores % cores_step)) -ne 0 ]]; then
             core_list+=($total_cores)
         fi
+        test_type="corescaling"
     fi
     
     echo "${core_list[@]}"
@@ -288,6 +352,8 @@ numa_nodes: $total_numa_nodes
 test_cores: $cores
 workload_script: "$script_path"
 script_args: "$script_args"
+customer_name: "$customer_name"
+test_type: "$test_type"
 EOF
 
     if [[ "$enable_emon" == true ]]; then
@@ -315,20 +381,17 @@ num_instances:1
 sockets:$total_sockets
 cores_used:$cores
 total_cores:$total_cores
-notes:"Core scaling test with $cores cores using $(basename "$script_path")"
+customer_name:"$customer_name"
+test_type:"$test_type"
+notes:"$test_type test with $cores cores using $(basename "$script_path")"
 test_date:"$(date '+%Y-%m-%d %H:%M:%S')"
 hostname:"$(hostname)"
 EOF
 }
 
 initialize_master_results() {
-    # Create CSV header if file doesn't exist
-    if [[ ! -f "$MASTER_CSV_FILE" ]]; then
-        cat > "$MASTER_CSV_FILE" << EOF
-Timestamp,Hostname,Workload,Test_Case,Cores_Used,Total_Cores,CPU_Model,OS,Kernel,BIOS,Microcode,Sockets,NUMA_Nodes,Metric_Type,Metric_Unit,Score,Performance,Throughput,Notes,Script_Path,Script_Args,EMON_Enabled,EMON_Session,Run_ID
-EOF
-        log "Created master CSV results file: $MASTER_CSV_FILE"
-    fi
+    # Only create Excel file, no CSV needed
+    log "Master results will be saved to: $MASTER_RESULTS_FILE"
 }
 
 add_result_to_master() {
@@ -338,62 +401,64 @@ add_result_to_master() {
     local test_case="$4"
     local notes="$5"
     
+    # Create temporary CSV for Excel conversion
+    local temp_csv=$(mktemp)
+    local new_entry_csv=$(mktemp)
+    
+    # Create header if this is the first entry
+    if [[ ! -f "$MASTER_RESULTS_FILE" ]]; then
+        cat > "$temp_csv" << EOF
+Timestamp,Hostname,Workload,Test_Case,Cores_Used,Total_Cores,CPU_Model,OS,Kernel,BIOS,Microcode,Sockets,NUMA_Nodes,Customer_Name,Metric_Unit,Score,Notes,Script_Path,Script_Args,EMON_Enabled,EMON_Session,Run_ID
+EOF
+    else
+        # Extract existing data from Excel if it exists
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -c "
+try:
+    import pandas as pd
+    df = pd.read_excel('$MASTER_RESULTS_FILE', sheet_name='Results')
+    df.to_csv('$temp_csv', index=False)
+except:
+    # If Excel read fails, create new header
+    with open('$temp_csv', 'w') as f:
+        f.write('Timestamp,Hostname,Workload,Test_Case,Cores_Used,Total_Cores,CPU_Model,OS,Kernel,BIOS,Microcode,Sockets,NUMA_Nodes,Customer_Name,Metric_Unit,Score,Notes,Script_Path,Script_Args,EMON_Enabled,EMON_Session,Run_ID\n')
+" 2>/dev/null || {
+                # Fallback if Python fails
+                cat > "$temp_csv" << EOF
+Timestamp,Hostname,Workload,Test_Case,Cores_Used,Total_Cores,CPU_Model,OS,Kernel,BIOS,Microcode,Sockets,NUMA_Nodes,Customer_Name,Metric_Unit,Score,Notes,Script_Path,Script_Args,EMON_Enabled,EMON_Session,Run_ID
+EOF
+            }
+        else
+            cat > "$temp_csv" << EOF
+Timestamp,Hostname,Workload,Test_Case,Cores_Used,Total_Cores,CPU_Model,OS,Kernel,BIOS,Microcode,Sockets,NUMA_Nodes,Customer_Name,Metric_Unit,Score,Notes,Script_Path,Script_Args,EMON_Enabled,EMON_Session,Run_ID
+EOF
+        fi
+    fi
+    
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local hostname=$(hostname)
-    local workload_basename=$(basename "$(dirname "$script_path")")
     
-    # Auto-detect workload name if not provided
-    if [[ -z "$workload_name" ]]; then
-        workload_name="$workload_basename"
-    fi
+    # Clean up multiline values
+    local clean_bios=$(echo "$bios_version" | tr -d '\n\r' | sed 's/[[:space:]]\+/ /g')
+    local clean_microcode=$(echo "$microcode" | tr -d '\n\r' | sed 's/[[:space:]]\+/ /g')
     
-    # Auto-detect metric unit based on workload if not provided
-    if [[ -z "$metric_unit" ]]; then
-        case "$workload_basename" in
-            "SuperPi"|"superpi")
-                metric_unit="seconds"
-                metric_type="Latency"
-                ;;
-            "stream")
-                metric_unit="MB/s"
-                metric_type="Throughput"
-                ;;
-            "sysbench")
-                metric_unit="ops/s"
-                metric_type="Throughput"
-                ;;
-            "stress-ng")
-                metric_unit="bogo ops/s"
-                metric_type="Throughput"
-                ;;
-            "ffmpeg")
-                metric_unit="fps"
-                metric_type="Throughput"
-                ;;
-            "crypto++")
-                metric_unit="MB/s"
-                metric_type="Throughput"
-                ;;
-            "multichase")
-                metric_unit="ns"
-                metric_type="Latency"
-                ;;
-            *)
-                metric_unit="units"
-                metric_type="Performance"
-                ;;
-        esac
-    fi
-    
-    # Append to CSV
-    cat >> "$MASTER_CSV_FILE" << EOF
-"$timestamp","$hostname","$workload_name","$test_case",$cores,$total_cores,"$cpu_model_name","$operating_system","$kernel_version","$bios_version","$microcode",$total_sockets,$total_numa_nodes,"$metric_type","$metric_unit","$performance_result","$performance_result","$performance_result","$notes","$script_path","$script_args","$enable_emon","$emon_session","$run_id"
+    # Append new entry
+    cat >> "$temp_csv" << EOF
+"$timestamp","$hostname","$workload_name","$test_case",$cores,$total_cores,"$cpu_model_name","$operating_system","$kernel_version","$clean_bios","$clean_microcode",$total_sockets,$total_numa_nodes,"$customer_name","$metric_unit","$performance_result","$notes","$script_path","$script_args","$enable_emon","$emon_session","$run_id"
 EOF
     
-    log "Added result to master CSV: $workload_name - $cores cores - $performance_result $metric_unit"
+    # Convert to Excel
+    convert_csv_to_excel "$temp_csv"
+    
+    # Clean up
+    rm -f "$temp_csv" "$new_entry_csv"
+    
+    log "Added result to master Excel: $workload_name - $cores cores - $performance_result $metric_unit"
 }
 
 convert_csv_to_excel() {
+    local csv_file="$1"
+    
     if [[ "$dry_run" == true ]]; then
         echo "DRY RUN: Would convert CSV to Excel"
         return
@@ -401,7 +466,7 @@ convert_csv_to_excel() {
     
     # Check if python3 is available
     if ! command -v python3 >/dev/null 2>&1; then
-        log "Warning: python3 not found. Excel conversion skipped. CSV file available at: $MASTER_CSV_FILE"
+        log "Warning: python3 not found. Excel conversion skipped."
         return
     fi
     
@@ -425,12 +490,16 @@ except ImportError:
 def convert_csv_to_excel(csv_file, excel_file):
     if not EXCEL_AVAILABLE:
         print("Warning: pandas or openpyxl not available. Install with: pip3 install pandas openpyxl")
-        print(f"CSV file is available at: {csv_file}")
         return False
     
     try:
         # Read CSV
         df = pd.read_csv(csv_file)
+        
+        # Clean up any multiline values in dataframe
+        for col in df.columns:
+            if df[col].dtype == 'object':
+                df[col] = df[col].astype(str).str.replace('\n', ' ').str.replace('\r', ' ')
         
         # Create Excel writer
         with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
@@ -458,8 +527,9 @@ def convert_csv_to_excel(csv_file, excel_file):
                 
                 for cell in column:
                     try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
+                        cell_value = str(cell.value) if cell.value is not None else ""
+                        if len(cell_value) > max_length:
+                            max_length = len(cell_value)
                     except:
                         pass
                 
@@ -478,61 +548,63 @@ def convert_csv_to_excel(csv_file, excel_file):
                 for cell in row:
                     cell.border = thin_border
             
-            # Create summary sheet
-            summary_data = []
-            
-            # Group by workload
-            workload_summary = df.groupby('Workload').agg({
-                'Cores_Used': ['min', 'max', 'count'],
-                'Score': ['min', 'max', 'mean'],
-                'Timestamp': ['min', 'max']
-            }).round(3)
-            
-            summary_df = pd.DataFrame({
-                'Workload': workload_summary.index,
-                'Min_Cores': workload_summary[('Cores_Used', 'min')].values,
-                'Max_Cores': workload_summary[('Cores_Used', 'max')].values,
-                'Total_Runs': workload_summary[('Cores_Used', 'count')].values,
-                'Best_Score': workload_summary[('Score', 'min')].values,
-                'Worst_Score': workload_summary[('Score', 'max')].values,
-                'Avg_Score': workload_summary[('Score', 'mean')].values,
-                'First_Run': workload_summary[('Timestamp', 'min')].values,
-                'Last_Run': workload_summary[('Timestamp', 'max')].values
-            })
-            
-            summary_df.to_excel(writer, sheet_name='Summary', index=False)
-            
-            # Style summary sheet
-            summary_ws = writer.sheets['Summary']
-            for cell in summary_ws[1]:
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.alignment = header_alignment
-            
-            for column in summary_ws.columns:
-                max_length = 0
-                column_letter = column[0].column_letter
-                
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
-                
-                adjusted_width = min(max_length + 2, 30)
-                summary_ws.column_dimensions[column_letter].width = adjusted_width
-            
-            for row in summary_ws.iter_rows():
-                for cell in row:
-                    cell.border = thin_border
+            # Create summary sheet if we have data
+            if len(df) > 0:
+                try:
+                    # Group by workload and customer
+                    summary_data = []
+                    
+                    for (workload, customer), group in df.groupby(['Workload', 'Customer_Name']):
+                        summary_data.append({
+                            'Workload': workload,
+                            'Customer': customer,
+                            'Total_Runs': len(group),
+                            'Min_Cores': group['Cores_Used'].min(),
+                            'Max_Cores': group['Cores_Used'].max(),
+                            'Best_Score': group['Score'].min() if group['Score'].dtype in ['int64', 'float64'] else 'N/A',
+                            'Worst_Score': group['Score'].max() if group['Score'].dtype in ['int64', 'float64'] else 'N/A',
+                            'Avg_Score': round(group['Score'].mean(), 3) if group['Score'].dtype in ['int64', 'float64'] else 'N/A',
+                            'First_Run': group['Timestamp'].min(),
+                            'Last_Run': group['Timestamp'].max()
+                        })
+                    
+                    if summary_data:
+                        summary_df = pd.DataFrame(summary_data)
+                        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                        
+                        # Style summary sheet
+                        summary_ws = writer.sheets['Summary']
+                        for cell in summary_ws[1]:
+                            cell.font = header_font
+                            cell.fill = header_fill
+                            cell.alignment = header_alignment
+                        
+                        for column in summary_ws.columns:
+                            max_length = 0
+                            column_letter = column[0].column_letter
+                            
+                            for cell in column:
+                                try:
+                                    cell_value = str(cell.value) if cell.value is not None else ""
+                                    if len(cell_value) > max_length:
+                                        max_length = len(cell_value)
+                                except:
+                                    pass
+                            
+                            adjusted_width = min(max_length + 2, 30)
+                            summary_ws.column_dimensions[column_letter].width = adjusted_width
+                        
+                        for row in summary_ws.iter_rows():
+                            for cell in row:
+                                cell.border = thin_border
+                except Exception as e:
+                    print(f"Warning: Could not create summary sheet: {e}")
         
         print(f"Excel file created successfully: {excel_file}")
         return True
         
     except Exception as e:
         print(f"Error creating Excel file: {e}")
-        print(f"CSV file is available at: {csv_file}")
         return False
 
 if __name__ == "__main__":
@@ -551,10 +623,10 @@ if __name__ == "__main__":
 EOF
     
     # Run the conversion
-    if python3 "$python_script" "$MASTER_CSV_FILE" "$MASTER_RESULTS_FILE"; then
-        log "Excel file created: $MASTER_RESULTS_FILE"
+    if python3 "$python_script" "$csv_file" "$MASTER_RESULTS_FILE"; then
+        debug_log "Excel file updated: $MASTER_RESULTS_FILE"
     else
-        log "Excel conversion failed. CSV file available: $MASTER_CSV_FILE"
+        log "Excel conversion failed."
     fi
     
     # Clean up
@@ -563,56 +635,140 @@ EOF
 
 parse_performance_output() {
     local output_file="$1"
+    local output_dir="$2"
+    
+    debug_log "Starting performance parsing for: $output_file"
     
     if [[ ! -f "$output_file" ]]; then
+        debug_log "Output file not found: $output_file"
         echo "N/A"
         return
     fi
     
     local content=$(cat "$output_file")
+    debug_log "Output file size: $(wc -l < "$output_file") lines"
     
-    # Pattern 1: "Performance: 1234.56 seconds" or "Performance: 1234.56"
-    local perf_match=$(echo "$content" | grep -i "performance:" | head -1 | sed 's/.*performance:[[:space:]]*\([0-9.]*\).*/\1/')
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "=== DEBUG: Full output content ==="
+        cat "$output_file"
+        echo "=== END DEBUG OUTPUT ==="
+    fi
+    
+    # Check for workload_result.txt file (created by EMON wrapper or workload)
+    local workload_result_file="$output_dir/workload_result.txt"
+    if [[ -f "$workload_result_file" ]]; then
+        debug_log "Found workload_result.txt file"
+        local result_from_file=$(grep "result:" "$workload_result_file" | cut -d'"' -f2)
+        if [[ -n "$result_from_file" && "$result_from_file" != "N/A" && "$result_from_file" =~ ^[0-9.]+$ ]]; then
+            debug_log "Extracted result from workload_result.txt: $result_from_file"
+            echo "$result_from_file"
+            return
+        fi
+    fi
+    
+    # Check for benchmark_summary.txt (SuperPi specific)
+    local summary_file="$output_dir/benchmark_summary.txt"
+    if [[ -f "$summary_file" ]]; then
+        debug_log "Found benchmark_summary.txt file"
+        local summary_result=$(grep "SuperPi Score:" "$summary_file" | awk '{print $3}')
+        if [[ -n "$summary_result" && "$summary_result" =~ ^[0-9.]+$ ]]; then
+            debug_log "Extracted result from benchmark_summary.txt: $summary_result"
+            echo "$summary_result"
+            return
+        fi
+    fi
+    
+    # Pattern 1: SuperPi specific patterns
+    local superpi_score=$(echo "$content" | grep -i "superpi.*score" | head -1 | grep -oE '[0-9]+\.?[0-9]*')
+    if [[ -n "$superpi_score" && "$superpi_score" =~ ^[0-9.]+$ ]]; then
+        debug_log "Found SuperPi score pattern: $superpi_score"
+        echo "$superpi_score"
+        return
+    fi
+    
+    # Pattern 2: "Performance: 1234.56 seconds" or "Performance: 1234.56"
+    local perf_match=$(echo "$content" | grep -i "performance:" | head -1 | grep -oE '[0-9]+\.?[0-9]*')
     if [[ -n "$perf_match" && "$perf_match" =~ ^[0-9.]+$ ]]; then
+        debug_log "Found performance pattern: $perf_match"
         echo "$perf_match"
         return
     fi
     
-    # Pattern 2: "Throughput: 1234.56"
-    local throughput_match=$(echo "$content" | grep -i "throughput:" | head -1 | sed 's/.*throughput:[[:space:]]*\([0-9.]*\).*/\1/')
+    # Pattern 3: "Throughput: 1234.56"
+    local throughput_match=$(echo "$content" | grep -i "throughput:" | head -1 | grep -oE '[0-9]+\.?[0-9]*')
     if [[ -n "$throughput_match" && "$throughput_match" =~ ^[0-9.]+$ ]]; then
+        debug_log "Found throughput pattern: $throughput_match"
         echo "$throughput_match"
         return
     fi
     
-    # Pattern 3: "Score: 1234.56" or similar
-    local score_match=$(echo "$content" | grep -i "score:" | head -1 | sed 's/.*score:[[:space:]]*\([0-9.]*\).*/\1/')
+    # Pattern 4: "Score: 1234.56" or similar
+    local score_match=$(echo "$content" | grep -i "score:" | head -1 | grep -oE '[0-9]+\.?[0-9]*')
     if [[ -n "$score_match" && "$score_match" =~ ^[0-9.]+$ ]]; then
+        debug_log "Found score pattern: $score_match"
         echo "$score_match"
         return
     fi
     
-    # Pattern 4: Look for any line with just a number (common in benchmark outputs)
-    local number_match=$(echo "$content" | grep -E "^[0-9]+\.?[0-9]*$" | head -1)
-    if [[ -n "$number_match" && "$number_match" =~ ^[0-9.]+$ ]]; then
-        echo "$number_match"
-        return
-    fi
-    
-    # Pattern 5: CSV format - look for Score column (6th column)
-    local csv_match=$(echo "$content" | grep "," | grep -v "Date,Workload" | head -1 | cut -d',' -f6)
-    if [[ -n "$csv_match" && "$csv_match" =~ ^[0-9.]+$ ]]; then
-        echo "$csv_match"
+    # Pattern 5: Look for "execution time" patterns
+    local exec_time=$(echo "$content" | grep -i "execution.*time" | head -1 | grep -oE '[0-9]+\.?[0-9]*')
+    if [[ -n "$exec_time" && "$exec_time" =~ ^[0-9.]+$ ]]; then
+        debug_log "Found execution time pattern: $exec_time"
+        echo "$exec_time"
         return
     fi
     
     # Pattern 6: Look for time format like "real 12.34"
     local time_match=$(echo "$content" | grep "real" | head -1 | awk '{print $2}')
     if [[ -n "$time_match" && "$time_match" =~ ^[0-9.]+$ ]]; then
+        debug_log "Found real time pattern: $time_match"
         echo "$time_match"
         return
     fi
     
+    # Pattern 7: CSV format - look for Score column (6th column)
+    local csv_match=$(echo "$content" | grep "," | grep -v "Date,Workload" | tail -1 | cut -d',' -f6)
+    if [[ -n "$csv_match" && "$csv_match" =~ ^[0-9.]+$ ]]; then
+        debug_log "Found CSV score pattern: $csv_match"
+        echo "$csv_match"
+        return
+    fi
+    
+    # Pattern 8: Look for any standalone number on its own line (common in benchmark outputs)
+    local number_match=$(echo "$content" | grep -E "^[0-9]+\.?[0-9]*$" | tail -1)
+    if [[ -n "$number_match" && "$number_match" =~ ^[0-9.]+$ ]]; then
+        debug_log "Found standalone number pattern: $number_match"
+        echo "$number_match"
+        return
+    fi
+    
+    # Pattern 9: Look for numbers after common benchmark keywords
+    local result_keywords=("result" "time" "duration" "elapsed" "total" "average" "avg")
+    for keyword in "${result_keywords[@]}"; do
+        local keyword_match=$(echo "$content" | grep -i "$keyword" | head -1 | grep -oE '[0-9]+\.?[0-9]*' | tail -1)
+        if [[ -n "$keyword_match" && "$keyword_match" =~ ^[0-9.]+$ ]]; then
+            debug_log "Found keyword ($keyword) pattern: $keyword_match"
+            echo "$keyword_match"
+            return
+        fi
+    done
+    
+    # Pattern 10: Look in any CSV files created by the workload
+    if [[ -d "$output_dir" ]]; then
+        for csv_file in "$output_dir"/*.csv; do
+            if [[ -f "$csv_file" ]]; then
+                debug_log "Checking CSV file: $csv_file"
+                local csv_result=$(tail -1 "$csv_file" | cut -d',' -f6 2>/dev/null)
+                if [[ -n "$csv_result" && "$csv_result" =~ ^[0-9.]+$ ]]; then
+                    debug_log "Found result in CSV file: $csv_result"
+                    echo "$csv_result"
+                    return
+                fi
+            fi
+        done
+    fi
+    
+    debug_log "No performance result found in any pattern"
     echo "N/A"
 }
 
@@ -627,6 +783,8 @@ run_workload_with_cores() {
     echo "Running $workload_basename with $cores cores"
     echo "Run ID: $run_id"
     echo "Output directory: $output_dir"
+    echo "Customer: $customer_name"
+    echo "Test Type: $test_type"
     echo "=================================================="
     
     # Create output directory
@@ -754,17 +912,23 @@ run_workload_with_cores() {
     if [[ "$dry_run" == false && $exit_code -eq 0 ]]; then
         echo "Processing results..."
         
-        # Parse performance output
-        local perf_result=$(parse_performance_output "$output_file")
+        # Parse performance output with enhanced debugging
+        local perf_result=$(parse_performance_output "$output_file" "$output_dir")
         echo "Parsed performance result: $perf_result"
+        
+        if [[ "$DEBUG_MODE" == true ]]; then
+            echo "=== DEBUG: Files in output directory ==="
+            ls -la "$output_dir"
+            echo "=== END DEBUG FILES ==="
+        fi
         
         if [[ "$enable_emon" == true ]]; then
             create_workload_result_file "$output_dir" "$cores" "$perf_result"
         fi
         
         # Add to master results
-        local test_case="${cores}cores"
-        local notes="Core scaling test with $cores cores using $(basename "$script_path")"
+        local test_case="${test_type}"
+        local notes="$test_type test with $cores cores using $(basename "$script_path")"
         if [[ -n "$script_args" ]]; then
             notes="$notes, args: $script_args"
         fi
@@ -779,8 +943,8 @@ run_workload_with_cores() {
         echo "Warning: Workload execution failed with exit code $exit_code"
         
         # Still add failed result to master results for tracking
-        local test_case="${cores}cores"
-        local notes="FAILED: Core scaling test with $cores cores using $(basename "$script_path"), exit code: $exit_code"
+        local test_case="${test_type}"
+        local notes="FAILED: $test_type test with $cores cores using $(basename "$script_path"), exit code: $exit_code"
         add_result_to_master "$cores" "FAILED" "$run_id" "$test_case" "$notes"
         
         if [[ $exit_code -eq 126 ]]; then
@@ -863,16 +1027,20 @@ while [[ $# -gt 0 ]]; do
             emon_session="$2"
             shift 2
             ;;
-        --workload-name)
-            workload_name="$2"
+        --customer-name)
+            customer_name="$2"
             shift 2
             ;;
-        --metric-type)
-            metric_type="$2"
+        --test-type)
+            test_type="$2"
             shift 2
             ;;
         --metric-unit)
             metric_unit="$2"
+            shift 2
+            ;;
+        --metric-type)
+            metric_type="$2"
             shift 2
             ;;
         --script-args)
@@ -890,6 +1058,10 @@ while [[ $# -gt 0 ]]; do
         --emon-output-dir)
             emon_output_dir="$2"
             shift 2
+            ;;
+        --debug)
+            DEBUG_MODE=true
+            shift
             ;;
         -h|--help)
             print_usage
@@ -925,6 +1097,13 @@ fi
 # Get system information
 get_system_info
 
+# Load workload configuration
+workload_basename=$(basename "$(dirname "$script_path")")
+if [[ -z "$workload_name" ]]; then
+    workload_name="$workload_basename"
+fi
+load_workload_config "$workload_basename"
+
 # Initialize master results file
 initialize_master_results
 
@@ -933,12 +1112,18 @@ echo "============================================================"
 echo "WORKLOAD WRAPPER SCRIPT (BASH VERSION)"
 echo "============================================================"
 echo "Script: $script_path"
+echo "Workload: $workload_name"
+echo "Customer: $customer_name"
 echo "Mode: $(if [[ "$dry_run" == true ]]; then echo "DRY RUN"; else echo "EXECUTION"; fi)"
+echo "Debug: $(if [[ "$DEBUG_MODE" == true ]]; then echo "ENABLED"; else echo "DISABLED"; fi)"
 echo "EMON: $(if [[ "$enable_emon" == true ]]; then echo "ENABLED"; else echo "DISABLED"; fi)"
+echo "Test Type: $test_type"
+echo "Metric: $metric_unit ($metric_type)"
 echo "System: $total_cores cores, $total_sockets sockets, $total_numa_nodes NUMA nodes"
 echo "CPU: $cpu_model_name"
 echo "OS: $operating_system"
 echo "Master Results: $MASTER_RESULTS_FILE"
+echo "Config File: $WORKLOAD_CONFIG_FILE"
 
 if [[ -n "$script_args" ]]; then
     echo "Script Args: $script_args"
@@ -948,8 +1133,6 @@ if [[ "$enable_emon" == true ]]; then
     echo "EMON User: $emon_user"
     echo "EMON Group: $emon_group"
     echo "EMON Session: $emon_session"
-    echo "Workload: $workload_name"
-    echo "Metric: $metric_unit"
 fi
 
 echo "============================================================"
@@ -975,12 +1158,6 @@ for cores in "${core_list[@]}"; do
     fi
 done
 
-# Convert CSV to Excel
-if [[ "$dry_run" == false ]]; then
-    log "Converting results to Excel format..."
-    convert_csv_to_excel
-fi
-
 echo "============================================================"
 echo "WORKLOAD WRAPPER EXECUTION COMPLETED"
 echo "============================================================"
@@ -992,7 +1169,7 @@ if [[ "$dry_run" == false ]]; then
     echo ""
     echo "RESULTS FILES:"
     echo "  Master Excel: $MASTER_RESULTS_FILE"
-    echo "  Master CSV: $MASTER_CSV_FILE"
+    echo "  Configuration: $WORKLOAD_CONFIG_FILE"
     echo "  Individual run data: $emon_output_dir"
     
     if [[ "$enable_emon" == true ]]; then
@@ -1005,8 +1182,17 @@ if [[ "$dry_run" == false ]]; then
     fi
     
     echo ""
-    echo "To install Excel conversion dependencies:"
+    echo "CONFIGURATION:"
+    echo "  Edit $WORKLOAD_CONFIG_FILE to customize workload settings"
+    echo "  Format: workload_name|customer_name|metric_unit|metric_type|test_type|notes"
+    
+    echo ""
+    echo "To install Excel dependencies:"
     echo "  pip3 install pandas openpyxl"
+    
+    echo ""
+    echo "To enable debug mode for troubleshooting:"
+    echo "  $0 --debug [other options]"
 fi
 
 echo "============================================================"
