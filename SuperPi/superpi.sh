@@ -151,84 +151,6 @@ setup_system() {
     fi
 }
 
-start_emon_collection() {
-    local session_name="$1"
-    local output_dir="$2"
-    
-    if [[ "$enable_emon" != true ]]; then
-        return 0
-    fi
-    
-    log "Starting EMON collection for session: $session_name"
-    
-    # Build TMC command
-    local tmc_cmd="python3 $tmc_path -c \"echo 'EMON_PLACEHOLDER'\" -d \"$output_dir\" -n"
-    
-    if [[ -n "$emon_user" ]]; then
-        tmc_cmd="$tmc_cmd -x \"$emon_user\""
-    fi
-    
-    if [[ -n "$emon_group" ]]; then
-        tmc_cmd="$tmc_cmd -G \"$emon_group\""
-    fi
-    
-    if [[ -n "$emon_session" ]]; then
-        tmc_cmd="$tmc_cmd -i \"$session_name\""
-    fi
-    
-    if [[ $emon_duration -gt 0 ]]; then
-        tmc_cmd="$tmc_cmd -t $emon_duration"
-    fi
-    
-    tmc_cmd="$tmc_cmd -w \"$emon_chart_views\""
-    
-    if [[ -n "$emon_server" ]]; then
-        tmc_cmd="$tmc_cmd -Z \"$emon_server\""
-    fi
-    
-    log "EMON Command: $tmc_cmd"
-    
-    # Start EMON in background
-    eval "$tmc_cmd" &
-    local emon_pid=$!
-    
-    # Give EMON time to start
-    sleep 3
-    
-    echo "$emon_pid"
-}
-
-stop_emon_collection() {
-    local emon_pid="$1"
-    
-    if [[ "$enable_emon" != true || -z "$emon_pid" ]]; then
-        return 0
-    fi
-    
-    log "Stopping EMON collection (PID: $emon_pid)"
-    
-    # Give EMON time to collect final data
-    sleep 2
-    
-    # Stop EMON gracefully
-    if kill -TERM "$emon_pid" 2>/dev/null; then
-        # Wait for graceful shutdown
-        local count=0
-        while kill -0 "$emon_pid" 2>/dev/null && [[ $count -lt 10 ]]; do
-            sleep 1
-            ((count++))
-        done
-        
-        # Force kill if still running
-        if kill -0 "$emon_pid" 2>/dev/null; then
-            kill -KILL "$emon_pid" 2>/dev/null || true
-        fi
-    fi
-    
-    wait "$emon_pid" 2>/dev/null || true
-    log "EMON collection stopped"
-}
-
 run_single_pi_calculation() {
     local core_id=$1
     local output_file=$2
@@ -237,6 +159,63 @@ run_single_pi_calculation() {
     # Run pi calculation on specific core and capture time
     { time -p echo "scale=$scale; 4*a(1)" | taskset -c $core_id bc -l -q; } 2>&1 | \
     grep real | awk '{print $NF}' > "$output_file"
+}
+
+# Create a wrapper script for EMON to execute
+create_emon_wrapper_script() {
+    local cores=$1
+    local scale=$2
+    local results_dir=$3
+    local wrapper_script="$results_dir/emon_wrapper.sh"
+    
+    mkdir -p "$results_dir"
+    
+    cat > "$wrapper_script" << EOF
+#!/bin/bash
+# EMON wrapper script for SuperPi execution
+
+set -euo pipefail
+
+RESULTS_DIR="$results_dir"
+CORES=$cores
+SCALE=$scale
+
+# Create results directory structure
+if [[ \$CORES -eq 1 ]]; then
+    TEST_DIR="\$RESULTS_DIR/single_core"
+    mkdir -p "\$TEST_DIR"
+    
+    echo "Running Super Pi with single core under EMON..."
+    
+    # Run single core calculation
+    { time -p echo "scale=\$SCALE; 4*a(1)" | taskset -c 0 bc -l -q; } 2>&1 | \\
+    grep real | awk '{print \$NF}' > "\$TEST_DIR/single_core.log"
+    
+else
+    TEST_DIR="\$RESULTS_DIR/multi_cores"
+    mkdir -p "\$TEST_DIR"
+    
+    echo "Running Super Pi with \$CORES cores under EMON..."
+    
+    # Run calculations on all cores in parallel
+    pids=()
+    for ((i=0; i<CORES; i++)); do
+        { time -p echo "scale=\$SCALE; 4*a(1)" | taskset -c \$i bc -l -q; } 2>&1 | \\
+        grep real | awk '{print \$NF}' > "\$TEST_DIR/core\${i}.log" &
+        pids[\$i]=\$!
+    done
+    
+    # Wait for all calculations to complete
+    for pid in "\${pids[@]}"; do
+        wait \$pid
+    done
+fi
+
+echo "SuperPi calculation completed under EMON monitoring"
+EOF
+    
+    chmod +x "$wrapper_script"
+    echo "$wrapper_script"
 }
 
 parse_superpi_results() {
@@ -370,63 +349,105 @@ run_superpi_benchmark() {
     
     local results_dir="$SCRIPT_DIR/result/pi_${timestamp}"
     local emon_output=""
-    local emon_pid=""
+    local avg_time=""
     
-    # Setup EMON output directory if enabled
     if [[ "$enable_emon" == true ]]; then
+        # EMON-enabled execution
         emon_output="$emon_output_dir/${session_name}"
         mkdir -p "$emon_output"
         create_system_info_file "$emon_output" "$cores"
         
-        # Start EMON collection
-        emon_pid=$(start_emon_collection "$session_name" "$emon_output")
-    fi
-    
-    local test_dir=""
-    local avg_time=""
-    
-    if [[ $cores -eq 1 ]]; then
-        test_dir="$results_dir/single_core"
-        mkdir -p "$test_dir"
+        # Create wrapper script for EMON to execute
+        local wrapper_script=$(create_emon_wrapper_script "$cores" "$scale" "$results_dir")
         
-        echo "Running Super Pi with single core..."
+        log "Starting EMON collection for session: $session_name"
         
-        # Run single core calculation
-        run_single_pi_calculation 0 "$test_dir/single_core.log" "$scale"
+        # Build TMC command with the wrapper script
+        local tmc_cmd="python3 $tmc_path -c \"$wrapper_script\" -d \"$emon_output\" -n"
         
-        echo "Single core test completed"
-        avg_time=$(parse_superpi_results "$test_dir" 1 "single")
+        if [[ -n "$emon_user" ]]; then
+            tmc_cmd="$tmc_cmd -x \"$emon_user\""
+        fi
+        
+        if [[ -n "$emon_group" ]]; then
+            tmc_cmd="$tmc_cmd -G \"$emon_group\""
+        fi
+        
+        if [[ -n "$emon_session" ]]; then
+            tmc_cmd="$tmc_cmd -i \"$session_name\""
+        fi
+        
+        if [[ $emon_duration -gt 0 ]]; then
+            tmc_cmd="$tmc_cmd -t $emon_duration"
+        fi
+        
+        tmc_cmd="$tmc_cmd -w \"$emon_chart_views\""
+        
+        if [[ -n "$emon_server" ]]; then
+            tmc_cmd="$tmc_cmd -Z \"$emon_server\""
+        fi
+        
+        log "EMON Command: $tmc_cmd"
+        
+        # Execute TMC with the wrapper script
+        if eval "$tmc_cmd"; then
+            log "EMON collection completed successfully"
+            
+            # Parse results from the wrapper script execution
+            if [[ $cores -eq 1 ]]; then
+                avg_time=$(parse_superpi_results "$results_dir/single_core" 1 "single")
+            else
+                avg_time=$(parse_superpi_results "$results_dir/multi_cores" "$cores" "multi")
+            fi
+            
+            # Create workload result file for EMON
+            create_workload_result_file "$emon_output" "$cores" "$avg_time"
+            
+            echo "EMON results saved to: $emon_output"
+        else
+            error_exit "EMON collection failed"
+        fi
+        
+        # Clean up wrapper script
+        rm -f "$wrapper_script"
         
     else
-        test_dir="$results_dir/multi_cores"
-        mkdir -p "$test_dir"
+        # Non-EMON execution (original logic)
+        local test_dir=""
         
-        echo "Running Super Pi with $cores cores..."
-        
-        # Run calculations on all cores in parallel
-        local pids=()
-        for ((i=0; i<cores; i++)); do
-            run_single_pi_calculation $i "$test_dir/core${i}.log" "$scale" &
-            pids[$i]=$!
-        done
-        
-        # Wait for all calculations to complete
-        for pid in "${pids[@]}"; do
-            wait $pid
-        done
-        
-        echo "Multi-core test completed"
-        avg_time=$(parse_superpi_results "$test_dir" "$cores" "multi")
-    fi
-    
-    # Stop EMON collection and create result files
-    if [[ "$enable_emon" == true ]]; then
-        stop_emon_collection "$emon_pid"
-        
-        # Create workload result file for EMON
-        create_workload_result_file "$emon_output" "$cores" "$avg_time"
-        
-        echo "EMON results saved to: $emon_output"
+        if [[ $cores -eq 1 ]]; then
+            test_dir="$results_dir/single_core"
+            mkdir -p "$test_dir"
+            
+            echo "Running Super Pi with single core..."
+            
+            # Run single core calculation
+            run_single_pi_calculation 0 "$test_dir/single_core.log" "$scale"
+            
+            echo "Single core test completed"
+            avg_time=$(parse_superpi_results "$test_dir" 1 "single")
+            
+        else
+            test_dir="$results_dir/multi_cores"
+            mkdir -p "$test_dir"
+            
+            echo "Running Super Pi with $cores cores..."
+            
+            # Run calculations on all cores in parallel
+            local pids=()
+            for ((i=0; i<cores; i++)); do
+                run_single_pi_calculation $i "$test_dir/core${i}.log" "$scale" &
+                pids[$i]=$!
+            done
+            
+            # Wait for all calculations to complete
+            for pid in "${pids[@]}"; do
+                wait $pid
+            done
+            
+            echo "Multi-core test completed"
+            avg_time=$(parse_superpi_results "$test_dir" "$cores" "multi")
+        fi
     fi
     
     return 0
