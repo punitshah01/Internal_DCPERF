@@ -165,19 +165,29 @@ TMC OPTIONAL:
 
 EXAMPLES:
   # Basic dry run
-  {sys.argv[0]} --script ./benchmarks/spec_cpu.sh --cores 8
+  {sys.argv[0]} --script ./ffmpeg/workload.sh --cores 8
 
   # Actual execution with specific nproc
-  {sys.argv[0]} --script ./benchmarks/ml_training.sh --nproc 32 --run
+  {sys.argv[0]} --script ./sysbench/workload.sh --nproc 32 --run
 
   # Minimal TMC integration (uses workload script defaults)
-  {sys.argv[0]} --script ./benchmarks/mediawiki.sh --cores 4 --emon \\
-     --emon-session "scaling_test" --workload-name "MediaWiki" --metric-unit "requests/sec" --run
+  {sys.argv[0]} --script ./stream/workload.sh --cores 4 --emon \\
+     --emon-session "scaling_test" --workload-name "STREAM" --metric-unit "MB/s" --run
 
   # Full TMC integration with custom parameters
-  {sys.argv[0]} --script ./benchmarks/hpc_workload.sh --cores 4 --emon \\
+  {sys.argv[0]} --script ./stress-ng/workload.sh --cores 4 --emon \\
      --emon-user john --emon-group custom_group --emon-server cluster01 \\
-     --emon-session "hpc_scaling" --workload-name "HPC Benchmark" --metric-unit "GFLOPS" --run
+     --emon-session "stress_scaling" --workload-name "Stress-ng" --metric-unit "Bogo_Ops/s" --run
+
+AVAILABLE WORKLOADS:
+  Look for workload.sh files in subdirectories:
+  - ./ffmpeg/workload.sh
+  - ./multichase/workload.sh
+  - ./crypto++/workload.sh
+  - ./super_pi/workload.sh
+  - ./sysbench/workload.sh
+  - ./stream/workload.sh
+  - ./stress-ng/workload.sh
 """
         print(usage)
 
@@ -204,14 +214,40 @@ EXAMPLES:
             self.print_usage()
             sys.exit(1)
         
+        # Handle relative paths from current directory
+        if not os.path.isabs(self.script_path):
+            self.script_path = os.path.join(self.abs_dir, self.script_path)
+        
         script_file = Path(self.script_path)
         if not script_file.exists():
             print(f"Error: Script file '{self.script_path}' not found")
+            
+            # Try to suggest available workloads
+            self.suggest_available_workloads()
             sys.exit(1)
         
         if not os.access(script_file, os.X_OK):
             print(f"Error: Script file '{self.script_path}' is not executable")
+            print(f"Try: chmod +x {self.script_path}")
             sys.exit(1)
+
+    def suggest_available_workloads(self):
+        """Suggest available workload scripts"""
+        print("\nAvailable workload scripts:")
+        workload_dirs = []
+        
+        # Look for workload.sh files in subdirectories
+        for item in self.abs_dir.iterdir():
+            if item.is_dir():
+                workload_script = item / "workload.sh"
+                if workload_script.exists():
+                    workload_dirs.append(f"  ./{item.name}/workload.sh")
+        
+        if workload_dirs:
+            for workload in sorted(workload_dirs):
+                print(workload)
+        else:
+            print("  No workload.sh files found in subdirectories")
 
     def get_core_list(self) -> List[int]:
         """Get list of core counts to test"""
@@ -310,6 +346,18 @@ hostname:"{os.uname().nodename}"
             if match:
                 return match.group(1)
             
+            # Pattern 5: Look for CSV results with Score column
+            lines = content.split('\n')
+            for line in lines:
+                if 'Score' in line and ',' in line:
+                    parts = line.split(',')
+                    if len(parts) >= 6:  # Date,Workload Name,Test Case,Command,KPI,Score
+                        try:
+                            score = float(parts[5].strip())
+                            return str(score)
+                        except:
+                            continue
+            
         except Exception as e:
             print(f"Warning: Error parsing performance output: {e}")
         
@@ -318,23 +366,29 @@ hostname:"{os.uname().nodename}"
     def run_workload_with_cores(self, cores: int):
         """Run workload with specified number of cores"""
         timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        run_id = f"{self.workload_name.replace(' ', '_')}_{cores}cores_{timestamp}"
+        workload_basename = Path(self.script_path).parent.name
+        run_id = f"{workload_basename}_{cores}cores_{timestamp}"
         output_dir = Path(self.emon_output_dir) / run_id
         
-        print("=" * 42)
-        print(f"Running with {cores} cores")
+        print("=" * 50)
+        print(f"Running {workload_basename} with {cores} cores")
         print(f"Output directory: {output_dir}")
-        print("=" * 42)
+        print("=" * 50)
         
         # Create output directory
-        output_dir.mkdir(parents=True, exist_ok=True)
+        if not self.dry_run:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            # Create system info file
+            self.create_system_info_file(output_dir, cores)
         
-        # Create system info file
-        self.create_system_info_file(output_dir, cores)
+        # Prepare workload command - use CPU cores parameter that matches your workload scripts
+        workload_cmd = f"{self.script_path} --cpu-cores 0-{cores-1}"
         
-        # Prepare workload command
-        workload_cmd = f"{self.script_path} --cores {cores} {self.script_args}"
-        output_file = output_dir / "workload_output.log"
+        # Add additional script arguments if provided
+        if self.script_args:
+            workload_cmd += f" {self.script_args}"
+        
+        output_file = output_dir / "workload_output.log" if not self.dry_run else Path("/dev/null")
         
         if self.enable_emon:
             # TMC command
@@ -361,7 +415,8 @@ hostname:"{os.uname().nodename}"
                 print("Executing with TMC/EMON...")
                 try:
                     with open(output_file, 'w') as f:
-                        result = subprocess.run(tmc_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT)
+                        result = subprocess.run(tmc_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT, 
+                                              cwd=Path(self.script_path).parent)
                     exit_code = result.returncode
                 except Exception as e:
                     print(f"Error executing TMC command: {e}")
@@ -377,7 +432,8 @@ hostname:"{os.uname().nodename}"
                 print("Executing workload directly...")
                 try:
                     with open(output_file, 'w') as f:
-                        result = subprocess.run(workload_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT)
+                        result = subprocess.run(workload_cmd, shell=True, stdout=f, stderr=subprocess.STDOUT,
+                                              cwd=Path(self.script_path).parent)
                     exit_code = result.returncode
                 except Exception as e:
                     print(f"Error executing workload command: {e}")
@@ -401,6 +457,10 @@ hostname:"{os.uname().nodename}"
 
     def set_performance_governor(self):
         """Set CPU governor to performance"""
+        if self.dry_run:
+            print("DRY RUN: Would set CPU governor to performance")
+            return
+            
         try:
             cpu_dirs = Path('/sys/devices/system/cpu').glob('cpu[0-9]*')
             for cpu_dir in cpu_dirs:
@@ -411,53 +471,74 @@ hostname:"{os.uname().nodename}"
                             f.write('performance')
                     except:
                         pass  # Ignore individual failures
+            print("CPU governor set to performance")
         except Exception as e:
             print(f"Warning: Could not set performance governor: {e}")
 
     def parse_arguments(self):
         """Parse command line arguments"""
-        parser = argparse.ArgumentParser(description="Main Workload Wrapper Script", add_help=False)
+        parser = argparse.ArgumentParser(
+            description="Main Workload Wrapper Script",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
+Examples:
+  # Basic dry run
+  python3 main_wrapper.py --script ./ffmpeg/workload.sh --cores 8
+
+  # Actual execution with specific nproc
+  python3 main_wrapper.py --script ./sysbench/workload.sh --nproc 32 --run
+
+  # With EMON integration
+  python3 main_wrapper.py --script ./stream/workload.sh --cores 4 --emon \\
+     --emon-session "scaling_test" --workload-name "STREAM" --metric-unit "MB/s" --run
+            """
+        )
         
         # Required arguments
-        parser.add_argument('-s', '--script', required=True, help='Path to workload script to execute')
+        parser.add_argument('-s', '--script', required=True, 
+                          help='Path to workload script to execute (REQUIRED)')
         
         # Core scaling arguments
         parser.add_argument('-c', '--cores', type=int, default=self.DEFAULT_CORES_STEP,
                           help=f'Core stepping size (default: {self.DEFAULT_CORES_STEP})')
-        parser.add_argument('-n', '--nproc', type=int, help='Run only with specific nproc value')
-        parser.add_argument('-r', '--run', action='store_true', help='Execute commands (default: dry-run)')
+        parser.add_argument('-n', '--nproc', type=int, 
+                          help='Run only with specific nproc value (overrides stepping)')
+        parser.add_argument('-r', '--run', action='store_true', 
+                          help='Execute commands (default: dry-run mode)')
         
         # TMC/EMON arguments
-        parser.add_argument('-e', '--emon', action='store_true', help='Enable TMC/EMON integration')
-        parser.add_argument('--emon-user', help='TMC username')
-        parser.add_argument('--emon-group', help='TMC group name')
-        parser.add_argument('--emon-server', help='Server identifier')
-        parser.add_argument('--emon-session', help='TMC session identifier')
+        parser.add_argument('-e', '--emon', action='store_true', 
+                          help='Enable TMC/EMON integration (default: disabled)')
+        parser.add_argument('--emon-user', help='TMC username (optional)')
+        parser.add_argument('--emon-group', help='TMC group name (optional)')
+        parser.add_argument('--emon-server', help='Server identifier (optional)')
+        parser.add_argument('--emon-session', help='TMC session identifier (required if --emon)')
         
         # Workload results arguments
-        parser.add_argument('--workload-name', help='Workload name for results file')
-        parser.add_argument('--metric-type', default=self.DEFAULT_METRIC_TYPE, help='Metric type')
-        parser.add_argument('--metric-unit', help='Metric unit')
+        parser.add_argument('--workload-name', help='Workload name for results file (required if --emon)')
+        parser.add_argument('--metric-type', default=self.DEFAULT_METRIC_TYPE, 
+                          help=f'Metric type (default: {self.DEFAULT_METRIC_TYPE})')
+        parser.add_argument('--metric-unit', help='Metric unit: ops/s, ms, GFLOPS, etc (required if --emon)')
         
         # Script parameters
-        parser.add_argument('--script-args', default='', help='Additional arguments to pass to workload script')
+        parser.add_argument('--script-args', default='', 
+                          help='Additional arguments to pass to workload script')
         
         # TMC optional arguments
         parser.add_argument('--emon-duration', type=int, default=self.DEFAULT_EMON_DURATION,
-                          help='Collection duration in seconds')
+                          help=f'Collection duration in seconds (default: {self.DEFAULT_EMON_DURATION} = until completion)')
         parser.add_argument('--emon-chart-views', default=self.DEFAULT_EMON_CHART_VIEWS,
-                          help='Chart views')
+                          help=f'Chart views (default: {self.DEFAULT_EMON_CHART_VIEWS})')
         parser.add_argument('--emon-output-dir', default=self.DEFAULT_EMON_OUTPUT_DIR,
-                          help='Base output directory')
+                          help=f'Base output directory (default: {self.DEFAULT_EMON_OUTPUT_DIR})')
         
-        # Help
-        parser.add_argument('-h', '--help', action='store_true', help='Show help message')
-        
-        args = parser.parse_args()
-        
-        if args.help:
-            self.print_usage()
-            sys.exit(0)
+        try:
+            args = parser.parse_args()
+        except SystemExit as e:
+            if e.code == 0:  # Help was requested
+                sys.exit(0)
+            else:  # Error in arguments
+                sys.exit(1)
         
         # Set instance variables
         self.script_path = args.script
@@ -498,9 +579,9 @@ hostname:"{os.uname().nodename}"
             sys.exit(1)
         
         # Print execution info
-        print("=" * 45)
+        print("=" * 60)
         print("WORKLOAD WRAPPER SCRIPT")
-        print("=" * 45)
+        print("=" * 60)
         print(f"Script: {self.script_path}")
         print(f"Mode: {'DRY RUN' if self.dry_run else 'EXECUTION'}")
         print(f"EMON: {'ENABLED' if self.enable_emon else 'DISABLED'}")
@@ -516,7 +597,7 @@ hostname:"{os.uname().nodename}"
             print(f"Workload: {self.workload_name}")
             print(f"Metric: {self.metric_unit}")
         
-        print("=" * 45)
+        print("=" * 60)
         print()
         
         # Get list of core counts to test
@@ -531,9 +612,9 @@ hostname:"{os.uname().nodename}"
         for cores in core_list:
             self.run_workload_with_cores(cores)
         
-        print("=" * 45)
+        print("=" * 60)
         print("WORKLOAD WRAPPER EXECUTION COMPLETED")
-        print("=" * 45)
+        print("=" * 60)
         
         if not self.dry_run:
             print(f"Results directory: {self.emon_output_dir}")
