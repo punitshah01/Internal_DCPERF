@@ -301,17 +301,17 @@ AVAILABLE WORKLOADS:
 
     def create_workload_result_file(self, output_dir: Path, cores: int, performance_result: str):
         """Create workload result file"""
-            workload_result_content = f"""workload_name:"{self.workload_name}"
-            metric_type:"{self.metric_type}"
-            result:"{performance_result}"
-            metric:"{self.metric_unit}"
-            num_instances:1
-            sockets:{self.system_info['total_sockets']}
-            cores_used:{cores}
-            total_cores:{self.system_info['total_cores']}
-            notes:"Core scaling test with {cores} cores using {Path(self.script_path).name}"
-            test_date:"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            hostname:"{os.uname().nodename}"
+        workload_result_content = f"""workload_name:"{self.workload_name}"
+        metric_type:"{self.metric_type}"
+        result:"{performance_result}"
+        metric:"{self.metric_unit}"
+        num_instances:1
+        sockets:{self.system_info['total_sockets']}
+        cores_used:{cores}
+        total_cores:{self.system_info['total_cores']}
+        notes:"Core scaling test with {cores} cores using {Path(self.script_path).name}"
+        test_date:"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        hostname:"{os.uname().nodename}"
         """
         
         with open(output_dir / "workload_result.txt", 'w') as f:
