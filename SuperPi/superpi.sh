@@ -1,5 +1,5 @@
 #!/bin/bash
-# superpi.sh - Super Pi benchmark script with EMON support
+# superpi.sh - Super Pi benchmark script with EMON support and metrics server upload
 
 # =============================================================================
 # SUPER PI WORKLOAD SCRIPT
@@ -36,6 +36,7 @@ emon_duration=0
 emon_chart_views="core,socket"
 emon_output_dir="./emon_traces"
 tmc_path=$DEFAULT_TMC_PATH
+emon_upload=false  # New: Enable upload to metrics server
 
 # Get script directory for output files
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,6 +66,7 @@ EMON INTEGRATION:
   --emon-duration SEC    Collection duration in seconds (default: 0 = until completion)
   --emon-chart-views V   Chart views (default: core,socket)
   --emon-output-dir DIR  EMON output directory (default: ./emon_traces)
+  --emon-upload          Upload EMON data to metrics server (default: disabled)
   --tmc-path PATH        Path to TMC script (default: $DEFAULT_TMC_PATH)
 
 LEGACY SUPPORT:
@@ -75,15 +77,18 @@ EXAMPLES:
   # Basic usage
   $0 --cores 8 --scale 5000 --runs 3
   
-  # With EMON monitoring
+  # With EMON monitoring (local only)
   $0 --cores 8 --emon --emon-session \"superpi_test\"
+  
+  # With EMON monitoring and upload to metrics server
+  $0 --cores 8 --emon --emon-session \"superpi_test\" --emon-upload
   
   # Wrapper compatibility
   $0 --cpu-cores 0-7 --name custom_test
   
-  # Full EMON configuration
+  # Full EMON configuration with upload
   $0 --cores 16 --emon --emon-session \"performance_test\" \\
-     --emon-user john --emon-group testing --emon-duration 300
+     --emon-user john --emon-group testing --emon-upload
 "
 }
 
@@ -299,6 +304,7 @@ workload_script: "$0"
 scale: $scale
 runs: $runs
 emon_enabled: $enable_emon
+emon_upload: $emon_upload
 EOF
 
     if [[ "$enable_emon" == true ]]; then
@@ -319,17 +325,28 @@ create_workload_result_file() {
     local performance_result="$3"
     local workload_result_file="$output_dir/workload_result.txt"
     
+    # Calculate throughput (inverse of time for pi calculation)
+    local throughput="N/A"
+    if [[ "$performance_result" =~ ^[0-9]+\.?[0-9]*$ ]] && (( $(echo "$performance_result > 0" | bc -l) )); then
+        throughput=$(echo "scale=6; 1 / $performance_result" | bc)
+    fi
+    
     cat > "$workload_result_file" << EOF
 workload_name:"Super Pi"
 metric_type:"Latency"
 result:"$performance_result"
 metric:"seconds"
+throughput:"$throughput"
+throughput_metric:"calculations/sec"
 num_instances:1
+sockets:$(lscpu | grep "Socket(s):" | awk '{print $2}' || echo "1")
 cores_used:$cores
+total_cores:$(nproc)
 test_date:"$(date '+%Y-%m-%d %H:%M:%S')"
 hostname:"$(hostname)"
 scale:$scale
 test_type:"pi_calculation"
+notes:"Super Pi calculation with scale=$scale on $cores cores"
 EOF
 }
 
@@ -342,6 +359,9 @@ run_superpi_benchmark() {
     echo "Cores: $cores"
     echo "Scale: $scale"
     echo "EMON: $(if [[ "$enable_emon" == true ]]; then echo "ENABLED"; else echo "DISABLED"; fi)"
+    if [[ "$enable_emon" == true ]]; then
+        echo "Upload: $(if [[ "$emon_upload" == true ]]; then echo "ENABLED"; else echo "DISABLED"; fi)"
+    fi
     echo "=========================================="
     
     local timestamp=$(date '+%Y%m%d_%H%M%S')
@@ -387,6 +407,14 @@ run_superpi_benchmark() {
             tmc_cmd="$tmc_cmd -Z \"$emon_server\""
         fi
         
+        # Add upload flag if enabled
+        if [[ "$emon_upload" == true ]]; then
+            tmc_cmd="$tmc_cmd -u"
+            log "EMON upload to metrics server: ENABLED"
+        else
+            log "EMON upload to metrics server: DISABLED (use --emon-upload to enable)"
+        fi
+        
         log "EMON Command: $tmc_cmd"
         
         # Execute TMC with the wrapper script
@@ -404,6 +432,12 @@ run_superpi_benchmark() {
             create_workload_result_file "$emon_output" "$cores" "$avg_time"
             
             echo "EMON results saved to: $emon_output"
+            
+            if [[ "$emon_upload" == true ]]; then
+                log "Data uploaded to metrics server: $emon_server"
+            else
+                log "Data saved locally. Use --emon-upload to upload to metrics server."
+            fi
         else
             error_exit "EMON collection failed"
         fi
@@ -531,6 +565,10 @@ while [[ $# -gt 0 ]]; do
             emon_output_dir="$2"
             shift 2
             ;;
+        --emon-upload)
+            emon_upload=true
+            shift
+            ;;
         --tmc-path)
             tmc_path="$2"
             shift 2
@@ -591,6 +629,8 @@ echo "EMON Enabled: $enable_emon"
 if [[ "$enable_emon" == true ]]; then
     echo "EMON Session: $emon_session"
     echo "EMON Output Dir: $emon_output_dir"
+    echo "EMON Upload: $emon_upload"
+    echo "EMON Server: $emon_server"
 fi
 if [[ -n "$custom_name" ]]; then
     echo "Custom Name: $custom_name"
@@ -631,5 +671,10 @@ echo "Failed runs: $((runs - successful_runs))"
 echo "Results saved to: $RESULTS_FILE"
 if [[ "$enable_emon" == true ]]; then
     echo "EMON traces saved to: $emon_output_dir"
+    if [[ "$emon_upload" == true ]]; then
+        echo "Data uploaded to metrics server: $emon_server"
+    else
+        echo "Data saved locally only. Use --emon-upload to upload to server."
+    fi
 fi
 echo "============================================="
