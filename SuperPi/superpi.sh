@@ -172,6 +172,7 @@ create_emon_wrapper_script() {
     local scale=$2
     local results_dir=$3
     local emon_output_dir=$4
+    local session_name=$5
     local wrapper_script="$results_dir/emon_wrapper.sh"
     
     mkdir -p "$results_dir"
@@ -184,6 +185,7 @@ set -euo pipefail
 
 RESULTS_DIR="$results_dir"
 EMON_OUTPUT_DIR="$emon_output_dir"
+SESSION_NAME="$session_name"
 CORES=$cores
 SCALE=$scale
 
@@ -232,37 +234,60 @@ else
         if [[ -f "\$core_file" ]]; then
             core_time=\$(cat "\$core_file")
             if [[ "\$core_time" =~ ^[0-9]+\.?[0-9]*\$ ]]; then
-                total_time=\$(echo "scale=3; \$total_time + \$core_time" | bc)
+                total_time=\$(echo "scale=6; \$total_time + \$core_time" | bc)
                 valid_results=\$((valid_results + 1))
             fi
         fi
     done
     
     if [[ \$valid_results -gt 0 ]]; then
-        RESULT=\$(echo "scale=3; \$total_time / \$valid_results" | bc)
+        RESULT=\$(echo "scale=6; \$total_time / \$valid_results" | bc)
     else
         RESULT="N/A"
     fi
 fi
 
+# Calculate throughput (calculations per second)
+if [[ "\$RESULT" =~ ^[0-9]+\.?[0-9]*\$ ]] && (( \$(echo "\$RESULT > 0" | bc -l) )); then
+    THROUGHPUT=\$(echo "scale=6; 1 / \$RESULT" | bc)
+else
+    THROUGHPUT="N/A"
+fi
+
 # Create workload_result.txt in the EMON output directory
-# This is critical for metrics server integration
+# This format is critical for metrics server integration
 cat > "\$EMON_OUTPUT_DIR/workload_result.txt" << EOFRESULT
-workload_name:"Super Pi"
-metric_type:"Latency"
-result:"\$RESULT"
-metric:"seconds"
+workload_name:"Super Pi \$CORES cores scale \$SCALE"
+metric_type:"Throughput"
+result:"\$THROUGHPUT"
+metric:"calculations/sec"
+latency:"\$RESULT"
+latency_metric:"seconds"
 num_instances:1
 sockets:\$(lscpu | grep "Socket(s):" | awk '{print \$2}' || echo "1")
 cores_used:\$CORES
 total_cores:\$(nproc)
 scale:\$SCALE
-notes:"Super Pi calculation with scale=\$SCALE on \$CORES cores"
+session_name:"\$SESSION_NAME"
+notes:"Super Pi calculation with scale=\$SCALE on \$CORES cores, avg time=\$RESULT sec"
 EOFRESULT
 
 echo "SuperPi calculation completed under EMON monitoring"
-echo "Result: \$RESULT seconds"
+echo "Average Time: \$RESULT seconds"
+echo "Throughput: \$THROUGHPUT calculations/sec"
 echo "Workload result file created: \$EMON_OUTPUT_DIR/workload_result.txt"
+
+# Also create a summary file for easy reading
+cat > "\$EMON_OUTPUT_DIR/benchmark_summary.txt" << EOFSUMMARY
+=== Super Pi Benchmark Summary ===
+Session: \$SESSION_NAME
+Cores: \$CORES
+Scale: \$SCALE
+Average Time: \$RESULT seconds
+Throughput: \$THROUGHPUT calculations/sec
+Date: \$(date '+%Y-%m-%d %H:%M:%S')
+Hostname: \$(hostname)
+EOFSUMMARY
 EOF
     
     chmod +x "$wrapper_script"
@@ -380,7 +405,7 @@ run_superpi_benchmark() {
     echo "=========================================="
     
     local timestamp=$(date '+%Y%m%d_%H%M%S')
-    local session_name="${custom_name:-SUPERPI}_${cores}cores_scale${scale}_run${run_number}"
+    local session_name="${emon_session}_${cores}cores_scale${scale}_run${run_number}"
     
     local results_dir="$SCRIPT_DIR/result/pi_${timestamp}"
     local emon_output=""
@@ -393,7 +418,7 @@ run_superpi_benchmark() {
         create_system_info_file "$emon_output" "$cores"
         
         # Create wrapper script for EMON to execute
-        local wrapper_script=$(create_emon_wrapper_script "$cores" "$scale" "$results_dir" "$emon_output")
+        local wrapper_script=$(create_emon_wrapper_script "$cores" "$scale" "$results_dir" "$emon_output" "$session_name")
         
         log "Starting EMON collection for session: $session_name"
         
@@ -408,9 +433,11 @@ run_superpi_benchmark() {
             tmc_cmd="$tmc_cmd -G \"$emon_group\""
         fi
         
-        if [[ -n "$emon_session" ]]; then
-            tmc_cmd="$tmc_cmd -i \"$session_name\""
-        fi
+        # Use the session name as identity comment
+        tmc_cmd="$tmc_cmd -i \"$session_name\""
+        
+        # Also add as append string for better identification
+        tmc_cmd="$tmc_cmd -a \"$session_name\""
         
         if [[ $emon_duration -gt 0 ]]; then
             tmc_cmd="$tmc_cmd -t $emon_duration"
@@ -438,10 +465,16 @@ run_superpi_benchmark() {
             
             # Check if workload_result.txt was created
             if [[ -f "$emon_output/workload_result.txt" ]]; then
-                log "Workload result file created successfully"
+                log "Workload result file created successfully:"
                 cat "$emon_output/workload_result.txt"
             else
                 log "WARNING: workload_result.txt not found in $emon_output"
+            fi
+            
+            # Check if benchmark summary was created
+            if [[ -f "$emon_output/benchmark_summary.txt" ]]; then
+                log "Benchmark summary:"
+                cat "$emon_output/benchmark_summary.txt"
             fi
             
             # Parse results from the wrapper script execution for local CSV
@@ -455,7 +488,8 @@ run_superpi_benchmark() {
             
             if [[ "$emon_upload" == true ]]; then
                 log "Data uploaded to metrics server: $emon_server"
-                log "Check metrics dashboard for results"
+                log "Session name on server: $session_name"
+                log "Check metrics dashboard for results under session: $session_name"
             else
                 log "Data saved locally. Use --emon-upload to upload to metrics server."
             fi
@@ -694,6 +728,7 @@ if [[ "$enable_emon" == true ]]; then
     echo "EMON traces saved to: $emon_output_dir"
     if [[ "$emon_upload" == true ]]; then
         echo "Data uploaded to metrics server: $emon_server"
+        echo "Session name on server: $emon_session"
         echo "Check the metrics dashboard for workload results"
     else
         echo "Data saved locally only. Use --emon-upload to upload to server."
