@@ -18,11 +18,11 @@ CORES=""
 CPU_CORES=""  # New parameter for wrapper compatibility
 EMON_ENABLED=0
 EMON_SESSION=""
-EMON_USER="root"
-EMON_SERVER="localhost"
-EMON_GROUP="default"
+EMON_USER=""
+EMON_SERVER=""
+EMON_GROUP=""
 EMON_DURATION=""
-EMON_CHART_VIEWS=""
+EMON_CHART_VIEWS="core,socket"
 EMON_OUTPUT_DIR=""
 TMC_PATH="/root/tmc/tmc.py"
 TMC_ENABLED=0
@@ -324,28 +324,36 @@ EOF
 execute_with_tmc() {
     log_info "Executing workload with TMC/EMON integration"
     
-    # Build TMC command
-    local tmc_cmd="python3 \"$TMC_PATH\" -c \"$WRAPPER_SCRIPT\" -d \"$EMON_OUTPUT_DIR\" -n \"$EMON_SESSION\""
+    # Build TMC command with correct parameter mapping
+    local tmc_cmd="python3 \"$TMC_PATH\""
     
-    # Add optional TMC parameters
+    # Required parameters
+    tmc_cmd="$tmc_cmd -c \"$WRAPPER_SCRIPT\""  # TARGET_CMD
+    tmc_cmd="$tmc_cmd -d \"$EMON_OUTPUT_DIR\""  # DIR
+    
+    # Optional parameters with proper TMC argument mapping
+    if [[ -n "$EMON_SESSION" ]]; then
+        tmc_cmd="$tmc_cmd -i \"$EMON_SESSION\""  # IDENTITY_COMMENT
+    fi
+    
     if [[ -n "$EMON_USER" ]]; then
-        tmc_cmd="$tmc_cmd -u \"$EMON_USER\""
+        tmc_cmd="$tmc_cmd -x \"$EMON_USER\""  # USER
     fi
     
     if [[ -n "$EMON_SERVER" ]]; then
-        tmc_cmd="$tmc_cmd -s \"$EMON_SERVER\""
+        tmc_cmd="$tmc_cmd -Z \"$EMON_SERVER\""  # SERVER
     fi
     
     if [[ -n "$EMON_GROUP" ]]; then
-        tmc_cmd="$tmc_cmd -g \"$EMON_GROUP\""
+        tmc_cmd="$tmc_cmd -G \"$EMON_GROUP\""  # GROUP
     fi
     
-    if [[ -n "$EMON_DURATION" ]]; then
-        tmc_cmd="$tmc_cmd -t \"$EMON_DURATION\""
+    if [[ -n "$EMON_DURATION" ]] && [[ "$EMON_DURATION" =~ ^[0-9]+$ ]] && [[ "$EMON_DURATION" -gt 0 ]]; then
+        tmc_cmd="$tmc_cmd -t $EMON_DURATION"  # TIME_DURATION
     fi
     
     if [[ -n "$EMON_CHART_VIEWS" ]]; then
-        tmc_cmd="$tmc_cmd -v \"$EMON_CHART_VIEWS\""
+        tmc_cmd="$tmc_cmd -w \"$EMON_CHART_VIEWS\""  # CHART_VIEWS
     fi
     
     log_info "TMC Command: $tmc_cmd"
@@ -369,13 +377,14 @@ execute_with_tmc() {
         if [[ -f "$EMON_OUTPUT_DIR/workload_result.txt" ]]; then
             echo ""
             echo "Performance Results:"
-            grep -E "(FPS|Speed|Primary_Metric)" "$EMON_OUTPUT_DIR/workload_result.txt" | sed 's/^/  /'
+            grep -E "(FPS|Speed|Primary_Metric|result:)" "$EMON_OUTPUT_DIR/workload_result.txt" | sed 's/^/  /'
         fi
         echo "========================================="
         
         return 0
     else
         log_error "TMC execution failed with exit code: $tmc_exit_code"
+        log_info "Check TMC logs in: $EMON_OUTPUT_DIR"
         return 1
     fi
 }
@@ -749,11 +758,11 @@ print_usage() {
     echo "EMON INTEGRATION OPTIONS:"
     echo "  --emon                 Enable EMON performance monitoring"
     echo "  --emon-session NAME    EMON session name (required with --emon)"
-    echo "  --emon-user USER       EMON user (default: root)"
-    echo "  --emon-server SERVER   EMON server (default: localhost)"
-    echo "  --emon-group GROUP     EMON group (default: default)"
+    echo "  --emon-user USER       EMON user"
+    echo "  --emon-server SERVER   EMON server"
+    echo "  --emon-group GROUP     EMON group"
     echo "  --emon-duration SEC    EMON collection duration in seconds"
-    echo "  --emon-chart-views V   EMON chart views"
+    echo "  --emon-chart-views V   EMON chart views (default: core,socket)"
     echo "  --emon-output-dir DIR  EMON output directory"
     echo "  --tmc-path PATH        Path to TMC script (default: /root/tmc/tmc.py)"
     echo ""
