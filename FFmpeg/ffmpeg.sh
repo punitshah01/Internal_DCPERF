@@ -305,23 +305,23 @@ echo "Running FFmpeg \$TEST_TYPE test with \$CORES cores under EMON..."
 
 # Function to extract FPS and speed from FFmpeg output
 extract_fps_speed() {
-    local log_file="\$1"
+    fps_log_file="\$1"
     
-    local fps=\$(grep "fps=" "\$log_file" | tail -1 | sed -n 's/.*fps=\\s*\\([0-9.]*\\).*/\\1/p')
-    local speed=\$(grep "speed=" "\$log_file" | tail -1 | sed -n 's/.*speed=\\s*\\([0-9.]*\\)x.*/\\1/p')
+    fps_result=\$(grep "fps=" "\$fps_log_file" | tail -1 | sed -n 's/.*fps=\\s*\\([0-9.]*\\).*/\\1/p')
+    speed_result=\$(grep "speed=" "\$fps_log_file" | tail -1 | sed -n 's/.*speed=\\s*\\([0-9.]*\\)x.*/\\1/p')
     
-    if [[ -z "\$fps" ]] || [[ -z "\$speed" ]]; then
-        local summary_line=\$(grep "Lsize" "\$log_file" | tail -1)
+    if [[ -z "\$fps_result" ]] || [[ -z "\$speed_result" ]]; then
+        summary_line=\$(grep "Lsize" "\$fps_log_file" | tail -1)
         if [[ -n "\$summary_line" ]]; then
-            fps=\$(echo "\$summary_line" | sed -n 's/.*fps=\\s*\\([0-9.]*\\).*/\\1/p')
-            speed=\$(echo "\$summary_line" | sed -n 's/.*speed=\\s*\\([0-9.]*\\)x.*/\\1/p')
+            fps_result=\$(echo "\$summary_line" | sed -n 's/.*fps=\\s*\\([0-9.]*\\).*/\\1/p')
+            speed_result=\$(echo "\$summary_line" | sed -n 's/.*speed=\\s*\\([0-9.]*\\)x.*/\\1/p')
         fi
     fi
     
-    fps=\${fps:-0}
-    speed=\${speed:-0}
+    fps_result=\${fps_result:-0}
+    speed_result=\${speed_result:-0}
     
-    echo "\$fps \$speed"
+    echo "\$fps_result \$speed_result"
 }
 
 RESULT_FPS=""
@@ -330,20 +330,21 @@ RESULT_SPEED=""
 case "\$TEST_TYPE" in
     single)
         # Single instance test
-        local output_file="\$TEST_DIR/ffmpeg_single.log"
-        local encoded_file="\$TEST_DIR/output_single.\${CODEC}"
+        output_file="\$TEST_DIR/ffmpeg_single.log"
+        encoded_file="\$TEST_DIR/output_single.\${CODEC}"
         
         # Set CPU affinity
-        local core_list=\$(seq -s, 0 \$((CORES-1)))
+        core_list=\$(seq -s, 0 \$((CORES-1)))
         
         # Run FFmpeg
-        local cmd="taskset -c \$core_list ffmpeg -y -i \"\$INPUT_FILE\" -c:v lib\${CODEC} -preset \$PRESET -crf \$CRF -tune \$TUNE -threads \$THREADS \"\$encoded_file\""
+        cmd="taskset -c \$core_list ffmpeg -y -i \"\$INPUT_FILE\" -c:v lib\${CODEC} -preset \$PRESET -crf \$CRF -tune \$TUNE -threads \$THREADS \"\$encoded_file\""
+        echo "Executing: \$cmd"
         eval "\$cmd" > "\$output_file" 2>&1
         
         # Extract results
-        local fps_speed=\$(extract_fps_speed "\$output_file")
-        RESULT_FPS=\$(echo "\$fps_speed" | cut -d' ' -f1)
-        RESULT_SPEED=\$(echo "\$fps_speed" | cut -d' ' -f2)
+        fps_speed_result=\$(extract_fps_speed "\$output_file")
+        RESULT_FPS=\$(echo "\$fps_speed_result" | cut -d' ' -f1)
+        RESULT_SPEED=\$(echo "\$fps_speed_result" | cut -d' ' -f2)
         
         # Clean up encoded file
         rm -f "\$encoded_file"
@@ -351,36 +352,40 @@ case "\$TEST_TYPE" in
         
     multi)
         # Multiple instances test
-        local cores_per_instance=\$((CORES / INSTANCES))
-        local pids=()
-        local fps_files=()
-        local speed_files=()
+        cores_per_instance=\$((CORES / INSTANCES))
+        pids=()
+        fps_files=()
+        speed_files=()
+        
+        echo "Running \$INSTANCES instances with \$cores_per_instance cores each"
         
         # Launch multiple instances
         for i in \$(seq 1 \$INSTANCES); do
-            local start_core=\$(( (i-1) * cores_per_instance ))
-            local end_core=\$(( start_core + cores_per_instance - 1 ))
-            local core_list=\$(seq -s, \$start_core \$end_core)
+            start_core=\$(( (i-1) * cores_per_instance ))
+            end_core=\$(( start_core + cores_per_instance - 1 ))
+            core_list=\$(seq -s, \$start_core \$end_core)
             
-            local output_file="\$TEST_DIR/ffmpeg_multi_\${i}.log"
-            local encoded_file="\$TEST_DIR/output_\${i}.\${CODEC}"
-            local fps_file="/tmp/ffmpeg_fps_\$i"
-            local speed_file="/tmp/ffmpeg_speed_\$i"
+            output_file="\$TEST_DIR/ffmpeg_multi_\${i}.log"
+            encoded_file="\$TEST_DIR/output_\${i}.\${CODEC}"
+            fps_file="/tmp/ffmpeg_fps_\$i"
+            speed_file="/tmp/ffmpeg_speed_\$i"
             
             fps_files+=("\$fps_file")
             speed_files+=("\$speed_file")
             
+            echo "Starting instance \$i on cores \$core_list"
+            
             # Run instance in background
             (
-                local cmd="taskset -c \$core_list ffmpeg -y -i \"\$INPUT_FILE\" -c:v lib\${CODEC} -preset \$PRESET -crf \$CRF -tune \$TUNE -threads \$cores_per_instance \"\$encoded_file\""
+                cmd="taskset -c \$core_list ffmpeg -y -i \"\$INPUT_FILE\" -c:v lib\${CODEC} -preset \$PRESET -crf \$CRF -tune \$TUNE -threads \$cores_per_instance \"\$encoded_file\""
                 eval "\$cmd" > "\$output_file" 2>&1
                 
-                local fps_speed=\$(extract_fps_speed "\$output_file")
-                local fps=\$(echo "\$fps_speed" | cut -d' ' -f1)
-                local speed=\$(echo "\$fps_speed" | cut -d' ' -f2)
+                fps_speed_result=\$(extract_fps_speed "\$output_file")
+                fps_val=\$(echo "\$fps_speed_result" | cut -d' ' -f1)
+                speed_val=\$(echo "\$fps_speed_result" | cut -d' ' -f2)
                 
-                echo "\$fps" > "\$fps_file"
-                echo "\$speed" > "\$speed_file"
+                echo "\$fps_val" > "\$fps_file"
+                echo "\$speed_val" > "\$speed_file"
                 
                 rm -f "\$encoded_file"
             ) &
@@ -389,26 +394,27 @@ case "\$TEST_TYPE" in
         done
         
         # Wait for all instances to complete
+        echo "Waiting for all instances to complete..."
         for pid in "\${pids[@]}"; do
             wait \$pid
         done
         
         # Calculate total FPS and average speed
-        local total_fps=0
-        local total_speed=0
-        local valid_instances=0
+        total_fps=0
+        total_speed=0
+        valid_instances=0
         
         for i in \$(seq 1 \$INSTANCES); do
-            local fps_file="/tmp/ffmpeg_fps_\$i"
-            local speed_file="/tmp/ffmpeg_speed_\$i"
+            fps_file="/tmp/ffmpeg_fps_\$i"
+            speed_file="/tmp/ffmpeg_speed_\$i"
             
             if [[ -f "\$fps_file" ]] && [[ -f "\$speed_file" ]]; then
-                local fps=\$(cat "\$fps_file")
-                local speed=\$(cat "\$speed_file")
+                fps_val=\$(cat "\$fps_file")
+                speed_val=\$(cat "\$speed_file")
                 
-                if [[ -n "\$fps" ]] && [[ -n "\$speed" ]] && [[ "\$fps" != "0" ]]; then
-                    total_fps=\$(echo "\$total_fps + \$fps" | bc -l)
-                    total_speed=\$(echo "\$total_speed + \$speed" | bc -l)
+                if [[ -n "\$fps_val" ]] && [[ -n "\$speed_val" ]] && [[ "\$fps_val" != "0" ]]; then
+                    total_fps=\$(echo "\$total_fps + \$fps_val" | bc -l)
+                    total_speed=\$(echo "\$total_speed + \$speed_val" | bc -l)
                     ((valid_instances++))
                 fi
             fi
@@ -427,21 +433,26 @@ case "\$TEST_TYPE" in
         
     scaling)
         # Core scaling test - run with maximum cores
-        local output_file="\$TEST_DIR/ffmpeg_scaling.log"
-        local encoded_file="\$TEST_DIR/output_scaling.\${CODEC}"
+        output_file="\$TEST_DIR/ffmpeg_scaling.log"
+        encoded_file="\$TEST_DIR/output_scaling.\${CODEC}"
         
-        local core_list=\$(seq -s, 0 \$((CORES-1)))
+        core_list=\$(seq -s, 0 \$((CORES-1)))
         
-        local cmd="taskset -c \$core_list ffmpeg -y -i \"\$INPUT_FILE\" -c:v lib\${CODEC} -preset \$PRESET -crf \$CRF -tune \$TUNE -threads \$THREADS \"\$encoded_file\""
+        cmd="taskset -c \$core_list ffmpeg -y -i \"\$INPUT_FILE\" -c:v lib\${CODEC} -preset \$PRESET -crf \$CRF -tune \$TUNE -threads \$THREADS \"\$encoded_file\""
+        echo "Executing: \$cmd"
         eval "\$cmd" > "\$output_file" 2>&1
         
-        local fps_speed=\$(extract_fps_speed "\$output_file")
-        RESULT_FPS=\$(echo "\$fps_speed" | cut -d' ' -f1)
-        RESULT_SPEED=\$(echo "\$fps_speed" | cut -d' ' -f2)
+        fps_speed_result=\$(extract_fps_speed "\$output_file")
+        RESULT_FPS=\$(echo "\$fps_speed_result" | cut -d' ' -f1)
+        RESULT_SPEED=\$(echo "\$fps_speed_result" | cut -d' ' -f2)
         
         rm -f "\$encoded_file"
         ;;
 esac
+
+echo "FFmpeg test completed"
+echo "Result FPS: \$RESULT_FPS"
+echo "Result Speed: \$RESULT_SPEED"
 
 # Create workload_result.txt in the EMON output directory
 cat > "\$EMON_OUTPUT_DIR/workload_result.txt" << EOFRESULT
@@ -479,6 +490,9 @@ Date: \$(date '+%Y-%m-%d %H:%M:%S')
 Hostname: \$(hostname)
 Notes: Higher FPS is better performance
 EOFSUMMARY
+
+echo "Benchmark summary created: \$EMON_OUTPUT_DIR/benchmark_summary.txt"
+exit 0
 EOF
     
     chmod +x "$wrapper_script"
