@@ -22,7 +22,7 @@ dnf install -y python38 python38-pip git
 alternatives --set python3 /usr/bin/python3.8
 pip-3.8 install click pyyaml tabulate pandas
 dnf install -y epel-release
-dnf install -y dnf-command(config-manager)
+dnf install -y 'dnf-command(config-manager)'
 dnf config-manager --set-enabled PowerTools
 # Optional GCC 11 for newer folly:
 dnf install -y gcc-toolset-11
@@ -32,7 +32,7 @@ scl enable gcc-toolset-11 bash
 CentOS Stream 9:
 ```bash
 dnf install -y epel-release
-dnf install -y dnf-command(config-manager)
+dnf install -y 'dnf-command(config-manager)'
 dnf config-manager --set-enabled crb
 dnf install -y git python3-click python3-pyyaml python3-tabulate python3-pip xz-devel
 pip-3.9 install pandas
@@ -50,7 +50,7 @@ sudo pip3 install click pyyaml tabulate pandas
 dnf install -y git python3-click python3-pyyaml python3-tabulate python3-pip
 pip-3.9 install pandas
 dnf install -y epel-release
-dnf install -y dnf-command(config-manager)
+dnf install -y 'dnf-command(config-manager)'
 dnf config-manager --set-enabled crb
 ```
 - SELinux must be disabled (`/etc/selinux/config` -> `SELINUX=disabled`). **A reboot is required** after this change before running MediaWiki — the automation warns but does not reboot for you.
