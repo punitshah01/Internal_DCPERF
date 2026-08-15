@@ -164,6 +164,32 @@ def install_os_prerequisites(logger, dry_run: bool, resume: bool) -> bool:
     return ok
 
 
+def _check_benchmark_installer(dcperf_root: str, workload: str, logger) -> bool:
+    """Fail early when the DCPerf checkout lacks the installer referenced by benchmarks.yml."""
+    benchmark_file = Path(dcperf_root) / "benchpress" / "config" / "benchmarks.yml"
+    if not benchmark_file.exists():
+        logger.error("master_setup: benchmarks.yml is missing: %s", benchmark_file)
+        return False
+
+    expected = {
+        "health_check": "packages/health_check/install_health_check.sh",
+        "mediawiki": "packages/mediawiki/install_oss_performance_mediawiki.sh",
+    }.get(workload)
+    if expected is None:
+        return True
+
+    installer = Path(dcperf_root) / expected
+    if installer.exists():
+        return True
+
+    logger.error(
+        "master_setup: DCPerf checkout is incomplete for %s: missing %s. "
+        "Update the DCPerf source checkout (not only DCPerf_SCRIPTS) before retrying.",
+        workload, installer,
+    )
+    return False
+
+
 # ---------------------------------------------------------------------------
 # PART C: preflight checks
 # ---------------------------------------------------------------------------
@@ -360,6 +386,9 @@ def _install_workload(workload: str, wrapper_cls: Type[Any], config: Dict[str, A
     dcperf_root = config.get("dcperf_root")
     if not dcperf_root:
         logger.error("master_setup: dcperf_root not configured, cannot install %s", workload)
+        return False
+
+    if not _check_benchmark_installer(dcperf_root, workload, logger):
         return False
 
     # Workload-specific pre-install patches/prerequisite checks (FeedSim
