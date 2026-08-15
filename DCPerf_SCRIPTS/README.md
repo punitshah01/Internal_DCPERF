@@ -56,20 +56,21 @@ dnf config-manager --set-enabled crb
 - SELinux must be disabled (`/etc/selinux/config` -> `SELINUX=disabled`). **A reboot is required** after this change before running MediaWiki — the automation warns but does not reboot for you.
 - `/etc/security/limits.conf` needs `root hard/soft nofile 10485760`.
 - **Remove Docker/Podman if installed** — HHVM's bundled dependencies conflict with container runtimes on the same host. This is not automated; check manually with `rpm -q docker podman` / `dpkg -l | grep -E 'docker|podman'` before running MediaWiki.
-- HHVM 3.30 is downloaded and installed via `pour-hhvm.sh` automatically.
-- `nginx-1.22.tar.gz` is copied to `/usr/local` from `config.nginx_1_22_tarball_path` if set.
+- HHVM 3.30 is downloaded from the Intel Artifactory workload repository and installed via `pour-hhvm.sh` automatically. Set `workload_artifact_base_url` to override the repository.
+- `nginx-1.22.tar.gz` is downloaded from the same Artifactory repository and copied to `/usr/local`; set `nginx_1_22_tarball_path` to use a local copy instead.
 
 **EMON/SEP (optional, for telemetry):**
 - Install Intel VTune or SEP separately (not distributed with this repo).
 - Default expected path: `/opt/intel/sep`
 - Override in `config/dcperf_config.yaml`: `sep_path`
+- PNPWLS provides the supported setup flow in `C:/repos/pnpwls/setup/setup_emon.sh`. Copy that script/repository to the SUT, set `emon_setup_script` if you want to track its location, and run it before enabling `--emon`. It installs SEP/pyedp and the telemetry client (`tmc`).
 
 **Workload-specific prerequisites:**
 
 | Workload | Prerequisites |
 |---|---|
 | FeedSim | cmake, gcc, g++ (installed by workload installer); gengetopt-2.23 fetched by `pre_install_patch()` with mirror fallback |
-| MediaWiki | HHVM 3.30 (automated), SELinux disabled (reboot required), nofile limits, nginx-1.22 — see above |
+| MediaWiki | HHVM 3.30 and nginx-1.22 downloaded from Intel Artifactory (or local overrides), SELinux disabled (reboot required), nofile limits — see above |
 | Spark | Java 8 required; NVMe-TCP kernel modules required; custom kernel recommended (see Section 7); minimum 500GB NVMe storage |
 | TaoBench | `binutils-devel`, updated `ca-certificates` (installed automatically by `pre_install_check()`) |
 | Video | El Fuente dataset (user must provide) — place at the path set in `config/dcperf_config.yaml` under `video_dataset_path` |

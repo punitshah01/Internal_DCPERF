@@ -29,6 +29,13 @@ dcperf_root: null
 # Required: No — only needed if you pass --emon/--metric emon.
 sep_path: /opt/intel/sep
 
+# What it is: PNPWLS EMON setup script used to install SEP, pyedp, and tmc.
+# Where to find it: C:/repos/pnpwls/setup/setup_emon.sh on the PNPWLS repo,
+#                    or copy it to the SUT and set this path.
+# Example: /root/pnpwls/setup/setup_emon.sh
+# Required: No — run it before using --emon if SEP is not installed.
+emon_setup_script: null
+
 # ---------------------------------------------------------------------------
 # EMON telemetry
 # ---------------------------------------------------------------------------
@@ -143,6 +150,11 @@ clear_tmp: false
 # Example: /root/downloads/nginx-1.22.tar.gz
 # Required: No — warns and skips the copy if unset.
 nginx_1_22_tarball_path: null
+
+# What it is: Intel Artifactory base URL for DCPerf workload artifacts.
+# Example: https://af01p-or.devtools.intel.com/artifactory/dpgpaivsoworkloads-or-local/base/workloads/dcperf
+# Required: No — used automatically for HHVM/nginx fallback downloads.
+workload_artifact_base_url: https://af01p-or.devtools.intel.com/artifactory/dpgpaivsoworkloads-or-local/base/workloads/dcperf
 
 # What it is: number of NVMe namespaces/subsystems for setup_nvmet.py
 #             (documentation aliases matching the README's naming; the

@@ -30,10 +30,14 @@ from modules.dcperf_core_scaler import get_online_cores, get_total_cores, scale_
 _CPU_FREQ_CHECK_MARKER = "// disabled: fails on server CPUs"
 _HHVM_MARKER_PATH = Path("/usr/local/hphpi/legacy/bin/hhvm")
 _HHVM_URLS = {
-    "ubuntu": "https://github.com/facebookresearch/DCPerf/releases/download/hhvm/hhvm-3.30-multplatform-binary-ubuntu.tar.xz",
-    "centos8": "https://github.com/facebookresearch/DCPerf/releases/download/hhvm/hhvm-3.30-multplatform-binary.tar.xz",
-    "centos9": "https://github.com/facebookresearch/DCPerf/releases/download/hhvm/hhvm-3.30-multplatform-binary.tar.xz",
+    "ubuntu": "hhvm-3.30-multplatform-binary-ubuntu.tar.xz",
+    "centos8": "hhvm-3.30-multplatform-binary-centos.tar.xz",
+    "centos9": "hhvm-3.30-multplatform-binary-centos.tar.xz",
 }
+_ARTIFACT_BASE_URL = (
+    "https://af01p-or.devtools.intel.com/artifactory/"
+    "dpgpaivsoworkloads-or-local/base/workloads/dcperf"
+)
 _LIMITS_CONF_LINES = [
     "root            hard            nofile          10485760",
     "root            soft            nofile          10485760",
@@ -139,7 +143,9 @@ class MediaWikiWrapper(BaseWrapper):
             return True
 
         distro = detect_distro()
-        url = _HHVM_URLS.get(distro, _HHVM_URLS["centos9"])
+        artifact_base = self.config.get("workload_artifact_base_url", _ARTIFACT_BASE_URL).rstrip("/")
+        artifact_name = _HHVM_URLS.get(distro, _HHVM_URLS["centos9"])
+        url = f"{artifact_base}/{artifact_name}"
         self.logger.info("mediawiki_wrapper: installing HHVM 3.30 from %s", url)
         if self.args.dry_run:
             self.logger.info("mediawiki_wrapper: [dry-run] would download+extract+run pour-hhvm.sh")
@@ -160,19 +166,28 @@ class MediaWikiWrapper(BaseWrapper):
                 return False
 
     def _copy_nginx_tarball(self) -> bool:
-        """Copy a locally-provided nginx-1.22.tar.gz into /usr/local (path from config)."""
+        """Copy nginx-1.22.tar.gz into /usr/local, downloading from Artifactory if needed."""
         src = self.config.get("nginx_1_22_tarball_path")
-        if not src:
-            self.logger.warning(
-                "mediawiki_wrapper: config key 'nginx_1_22_tarball_path' not set -- "
-                "skipping nginx-1.22.tar.gz copy to /usr/local (place it there manually)"
-            )
-            return True
+        src_path = Path(src) if src else None
+        if src_path is None or not src_path.exists():
+            artifact_base = self.config.get("workload_artifact_base_url", _ARTIFACT_BASE_URL).rstrip("/")
+            artifact_url = f"{artifact_base}/nginx-1.22.tar.gz"
+            src_path = Path("/tmp/nginx-1.22.tar.gz")
+            self.logger.info("mediawiki_wrapper: downloading nginx tarball from %s", artifact_url)
+            if self.args.dry_run:
+                return True
+            try:
+                subprocess.run(
+                    ["wget", "-q", artifact_url, "-O", str(src_path)],
+                    check=True, capture_output=True, text=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                self.logger.error("mediawiki_wrapper: nginx Artifactory download failed: %s", exc.stderr)
+                return False
 
-        src_path = Path(src)
-        if not src_path.exists():
-            self.logger.warning("mediawiki_wrapper: %s does not exist, skipping nginx copy", src_path)
-            return True
+        if not src_path.exists() or src_path.stat().st_size == 0:
+            self.logger.error("mediawiki_wrapper: nginx tarball is missing or empty: %s", src_path)
+            return False
 
         dest = Path("/usr/local") / src_path.name
         if dest.exists():
