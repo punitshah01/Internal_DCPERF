@@ -63,7 +63,7 @@ dnf config-manager --set-enabled crb
 - Install Intel VTune or SEP separately (not distributed with this repo).
 - Default expected path: `/opt/intel/sep`
 - Override in `config/dcperf_config.yaml`: `sep_path`
-- PNPWLS provides the supported setup flow in `C:/repos/pnpwls/setup/setup_emon.sh`. Copy that script/repository to the SUT, set `emon_setup_script` if you want to track its location, and run it before enabling `--emon`. It installs SEP/pyedp and the telemetry client (`tmc`).
+- PNPWLS provides the supported setup flow in `C:/repos/pnpwls/setup/setup_emon.sh`. Copy that script/repository to the SUT, set `emon_setup_script` if you want to track its location, and run it before enabling `--emon`. It installs SEP/pyedp and the telemetry client (`tmc`). After SEP is installed, ConfigManager automatically selects a platform-matching `*server*events*.txt` file from `/opt/intel/sep/config/edp`, falling back to the first private/server event file.
 
 **Workload-specific prerequisites:**
 
@@ -73,7 +73,7 @@ dnf config-manager --set-enabled crb
 | MediaWiki | HHVM 3.30 and nginx-1.22 downloaded from Intel Artifactory (or local overrides), SELinux disabled (reboot required), nofile limits — see above |
 | Spark | Java 8 required; NVMe-TCP kernel modules required; custom kernel recommended (see Section 7); minimum 500GB NVMe storage |
 | TaoBench | `binutils-devel`, updated `ca-certificates` (installed automatically by `pre_install_check()`) |
-| Video | El Fuente dataset (user must provide) — place at the path set in `config/dcperf_config.yaml` under `video_dataset_path` |
+| Video | `cuts.tar.gz` is downloaded automatically from Intel Artifactory into the DCPerf video dataset directory and extracted; override `video_dataset_url` or `video_dataset_path` if needed |
 
 ## 3. Installation
 

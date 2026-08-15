@@ -12,8 +12,8 @@ import os
 import re
 import subprocess
 import sys
+import tarfile
 import time
-import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -72,40 +72,46 @@ class VideoWrapper(BaseWrapper):
             return True
 
         dataset_dir = Path(dataset_path)
-        cuts_zip = dataset_dir / "cuts.zip"
         cuts_dir = dataset_dir / "cuts"
 
         if cuts_dir.exists() and any(cuts_dir.iterdir()):
             self.logger.info("video_wrapper: Dataset already extracted, skipping")
             return True
 
-        if not cuts_zip.exists():
-            self.logger.error(
-                "video_wrapper: %s not found. Manually download the El Fuente dataset "
-                "(registration required at https://media.xiph.org/video/derf/) and place "
-                "cuts.zip at %s, or extract the .y4m files directly into %s.",
-                cuts_zip, dataset_dir, cuts_dir,
-            )
-            return False
-
-        if cuts_zip.stat().st_size == 0:
-            self.logger.error("video_wrapper: %s appears empty or corrupt (0 bytes)", cuts_zip)
-            return False
-
-        cmd = ["unzip", str(cuts_zip), "-d", str(dataset_dir)]
-        self.logger.info(
-            "video_wrapper: UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE %s", " ".join(cmd)
+        archive = dataset_dir / "cuts.tar.gz"
+        archive_url = self.config.get(
+            "video_dataset_url",
+            "https://af01p-or.devtools.intel.com/artifactory/"
+            "dpgpaivsoworkloads-or-local/base/workloads/dcperf/cuts.tar.gz",
         )
+        if not archive.exists():
+            self.logger.info("video_wrapper: downloading dataset archive from %s", archive_url)
+            if self.args.dry_run:
+                return True
+            try:
+                dataset_dir.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    ["wget", "-q", archive_url, "-O", str(archive)],
+                    check=True, capture_output=True, text=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                self.logger.error("video_wrapper: dataset download failed: %s", exc.stderr)
+                return False
+
+        if archive.stat().st_size == 0:
+            self.logger.error("video_wrapper: %s appears empty or corrupt (0 bytes)", archive)
+            return False
+
+        self.logger.info("video_wrapper: extracting %s into %s", archive, dataset_dir)
         if self.args.dry_run:
-            self.logger.info("video_wrapper: [dry-run] dataset unzip not executed")
+            self.logger.info("video_wrapper: [dry-run] dataset extraction not executed")
             return True
 
-        env = dict(os.environ)
-        env["UNZIP_DISABLE_ZIPBOMB_DETECTION"] = "TRUE"
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
-        except subprocess.CalledProcessError as exc:
-            self.logger.error("video_wrapper: dataset unzip failed: %s", exc.stderr)
+            with tarfile.open(archive, "r:gz") as tar:
+                tar.extractall(dataset_dir, filter="data")
+        except (OSError, tarfile.TarError) as exc:
+            self.logger.error("video_wrapper: dataset extraction failed: %s", exc)
             return False
 
         if not any(cuts_dir.glob("*.y4m")):

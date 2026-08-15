@@ -44,13 +44,13 @@ emon_setup_script: null
 # Where to find it: <sep_path>/config/edp/<platform>_server_events*.txt
 # Example: /opt/intel/sep/config/edp/graniterapids_server_events_private.txt
 # Required: Yes, only if using --emon/--metric emon.
-emon_event_file: null
+emon_event_file: null # auto-detected from <sep_path>/config/edp when available
 
 # What it is: EMON / DCSOMETRICS upload user/account name.
 # Where to find it: your DCSOMETRICS/Intel account username.
 # Example: jdoe
 # Required: Yes, only if using --emon/--metric emon.
-emon_user: null
+emon_user: pshah
 
 # ---------------------------------------------------------------------------
 # Workload-specific required paths
@@ -69,11 +69,14 @@ spark_data_path: null
 db_client_ip: null
 
 # What it is: directory holding the El Fuente (.y4m) video dataset.
-# Where to find it: manually downloaded (registration required) per
-#             packages/video_transcode_bench/README.md.
-# Example: /data/video_transcode_bench/datasets
-# Required: Yes, only for video_transcode_bench.
+# Default: <dcperf_root>/benchmarks/video_transcode_bench/datasets.
+# The wrapper downloads and extracts cuts.tar.gz here automatically.
+# Required: No, unless you need a custom dataset location.
 video_dataset_path: null
+
+# Artifactory archive downloaded automatically when video_dataset_path/cuts
+# is not already populated.
+video_dataset_url: https://af01p-or.devtools.intel.com/artifactory/dpgpaivsoworkloads-or-local/base/workloads/dcperf/cuts.tar.gz
 
 # ---------------------------------------------------------------------------
 # Core scaling / run defaults

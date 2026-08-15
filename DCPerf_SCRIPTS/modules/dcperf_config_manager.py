@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, Optional
+import platform
 
 import yaml
 
@@ -73,7 +74,67 @@ class ConfigManager:
             if root:
                 self._config["results_base_dir"] = str(Path(__file__).resolve().parent.parent / "results")
 
+        derived_changed = False
+        if not self._config.get("emon_user"):
+            self._config["emon_user"] = "pshah"
+            self.logger.info("config_manager: defaulted emon_user=pshah")
+            derived_changed = True
+
+        if not self._config.get("emon_event_file"):
+            event_file = self._discover_emon_event_file(self._config.get("sep_path"))
+            if event_file:
+                self._config["emon_event_file"] = str(event_file)
+                self.logger.info("config_manager: auto-detected emon_event_file=%s", event_file)
+                derived_changed = True
+
+        if not self._config.get("video_dataset_path") and self._config.get("dcperf_root"):
+            self._config["video_dataset_path"] = str(
+                Path(self._config["dcperf_root"])
+                / "benchmarks" / "video_transcode_bench" / "datasets"
+            )
+            self.logger.info(
+                "config_manager: defaulted video_dataset_path=%s",
+                self._config["video_dataset_path"],
+            )
+            derived_changed = True
+
+        if derived_changed:
+            self.save()
+
         return self._config
+
+    def _discover_emon_event_file(self, sep_path: Optional[str]) -> Optional[Path]:
+        """Find a platform event file using the installed SEP EDP directory.
+
+        PNPWLS setup_emon.sh installs SEP and pyedp but does not select a
+        platform event file. Prefer a platform-named private/server file,
+        then fall back to the first server event file shipped by SEP.
+        """
+        if not sep_path:
+            return None
+        edp_dir = Path(sep_path) / "config" / "edp"
+        if not edp_dir.exists():
+            return None
+
+        platform_name = platform.platform().lower()
+        aliases = []
+        if "granite" in platform_name or "6700" in platform_name or "6900" in platform_name:
+            aliases.append("graniterapids")
+        if "sapphire" in platform_name or "8470" in platform_name:
+            aliases.append("sapphirerapids")
+        if "emerald" in platform_name or "8570" in platform_name:
+            aliases.append("emeraldrapids")
+        if "diamond" in platform_name:
+            aliases.append("diamondrapids")
+
+        candidates = sorted(edp_dir.glob("*server*events*.txt"))
+        for alias in aliases:
+            matching = [path for path in candidates if alias in path.name.lower()]
+            if matching:
+                private = [path for path in matching if "private" in path.name.lower()]
+                return private[0] if private else matching[0]
+        private = [path for path in candidates if "private" in path.name.lower()]
+        return private[0] if private else (candidates[0] if candidates else None)
 
     def _auto_detect_dcperf_root(self) -> Optional[Path]:
         """Walk up from this file's location until benchpress/config/benchmarks.yml is found."""
