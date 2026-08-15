@@ -18,8 +18,8 @@ _WRAPPERS_DIR = Path(__file__).resolve().parent
 if str(_WRAPPERS_DIR) not in sys.path:
     sys.path.insert(0, str(_WRAPPERS_DIR))
 
-from base_wrapper import BaseWrapper
-from modules.core_scaler import get_total_cores, scale_generator, set_core_count
+from dcperf_base_wrapper import BaseWrapper
+from modules.dcperf_core_scaler import get_total_cores, scale_generator, set_core_count
 
 # FIX 1: gengetopt-2.23 mirror fallback chain (in download-URL preference order).
 _GENGETOPT_MIRRORS = [
@@ -83,8 +83,24 @@ class FeedsimWrapper(BaseWrapper):
             self.logger.info("feedsim_wrapper: [dry-run] would prepend gengetopt fallback block")
             return True
 
+        # Wire the fallback function into the install script's own gengetopt
+        # download call site, not just define an unused function -- a bare
+        # function definition with nothing calling it fixes nothing.
+        call_site_pattern = re.compile(r"^.*(wget|curl).*gengetopt-2\.23\.tar\.\w+.*$", re.MULTILINE)
+        patched_text, n_subs = call_site_pattern.subn("_dcperf_scripts_fetch_gengetopt || exit 1", text)
+        if n_subs == 0:
+            self.logger.warning(
+                "feedsim_wrapper: no existing gengetopt download call site found in %s; "
+                "fallback function defined but NOT wired to any call site",
+                install_script,
+            )
+        else:
+            self.logger.info(
+                "feedsim_wrapper: replaced %d existing gengetopt download line(s) with fallback call", n_subs
+            )
+
         try:
-            install_script.write_text(fallback_block + "\n" + text)
+            install_script.write_text(fallback_block + "\n" + patched_text)
             return True
         except OSError as exc:
             self.logger.error("feedsim_wrapper: failed to patch %s: %s", install_script, exc)
@@ -136,8 +152,26 @@ class FeedsimWrapper(BaseWrapper):
         """Apply the FeedSim OS tuning profile (tune_feedsim, routed by base_wrapper)."""
         return super().pre_run()
 
+    def get_job_vars(self) -> Dict[str, Any]:
+        """Forward --instances to benchpress via -i JSON (num_instances job var)."""
+        return {"num_instances": self.args.instances}
+
     def parse_output(self, stdout: str) -> Dict[str, Any]:
         parsed: Dict[str, Any] = {}
+        bp = self.parse_benchpress_json(stdout)
+        metrics = bp.get("metrics", {})
+        overall = metrics.get("overall", {})
+        if overall:
+            if "final_achieved_qps" in overall:
+                parsed["qps"] = float(overall["final_achieved_qps"])
+            if "average_latency_msec" in overall:
+                parsed["p95_latency_ms"] = float(overall["average_latency_msec"])
+            if "score" in metrics:
+                parsed["score"] = float(metrics["score"])
+            elif "score" in bp:
+                parsed["score"] = float(bp["score"])
+            return parsed
+
         match = re.search(r"QPS[:\s]+([\d.]+)", stdout)
         if match:
             parsed["qps"] = float(match.group(1))
@@ -150,10 +184,11 @@ class FeedsimWrapper(BaseWrapper):
         return {
             "qps": parsed.get("qps", 0.0),
             "p95_latency_ms": parsed.get("p95_latency_ms", 0.0),
+            "score": parsed.get("score", 0.0),
         }
 
     def get_csv_schema(self) -> List[str]:
-        return ["instances", "cores_enabled", "qps", "p95_latency_ms"]
+        return ["instances", "cores_enabled", "qps", "p95_latency_ms", "score"]
 
     def run_core_scaling(self) -> int:
         total = self.args.total_cores or get_total_cores()

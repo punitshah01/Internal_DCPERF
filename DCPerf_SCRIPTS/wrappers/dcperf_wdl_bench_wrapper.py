@@ -19,7 +19,7 @@ _WRAPPERS_DIR = Path(__file__).resolve().parent
 if str(_WRAPPERS_DIR) not in sys.path:
     sys.path.insert(0, str(_WRAPPERS_DIR))
 
-from base_wrapper import BaseWrapper
+from dcperf_base_wrapper import BaseWrapper
 
 
 class WdlBenchWrapper(BaseWrapper):
@@ -45,6 +45,17 @@ class WdlBenchWrapper(BaseWrapper):
 
     def parse_output(self, stdout: str) -> Dict[str, Any]:
         parsed: Dict[str, Any] = {}
+        bp = self.parse_benchpress_json(stdout)
+        metrics = bp.get("metrics", {})
+        if metrics:
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)):
+                    parsed[key] = float(value)
+            if "score" in bp and "score" not in parsed:
+                parsed["score"] = float(bp["score"])
+            if parsed:
+                return parsed
+
         # aggregate_result.py output, e.g. "throughput: 123456 ops/sec"
         match = re.search(r"throughput[:\s]+([\d.]+)", stdout, re.IGNORECASE)
         if match:
@@ -58,10 +69,11 @@ class WdlBenchWrapper(BaseWrapper):
         return {
             "throughput": parsed.get("throughput", 0.0),
             "latency_ns": parsed.get("latency_ns", 0.0),
+            "score": parsed.get("score", 0.0),
         }
 
     def get_csv_schema(self) -> List[str]:
-        return ["throughput", "latency_ns"]
+        return ["throughput", "latency_ns", "score"]
 
 
 def main() -> int:

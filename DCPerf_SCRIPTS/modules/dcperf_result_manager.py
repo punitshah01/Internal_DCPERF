@@ -19,10 +19,56 @@ from __future__ import annotations
 
 import csv
 import json
+import re
+import shutil
 import socket
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_SCORE_LINE_RE = re.compile(r"^(\w+):\s*([\d.]+),\s*single data point", re.MULTILINE)
+_OVERALL_SCORE_RE = re.compile(r"DCPerf overall score:\s*([\d.]+)", re.IGNORECASE)
+
+
+def collect_dcperf_score(dcperf_root: Optional[str], logger) -> Dict[str, Any]:
+    """Run `./benchpress_cli.py report score --all` and parse its output.
+
+    Returns {} if dcperf_root is unset, the command fails, or not enough
+    benchmarks have run for an overall score -- never raises.
+    """
+    if not dcperf_root:
+        return {}
+
+    cli = Path(dcperf_root) / "benchpress_cli.py"
+    if not cli.exists():
+        logger.warning("result_manager: %s not found, cannot collect DCPerf score", cli)
+        return {}
+
+    cmd = [sys.executable, str(cli), "report", "score", "--all"]
+    logger.info("result_manager: %s", " ".join(cmd))
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("result_manager: report score failed to run: %s", exc)
+        return {}
+
+    output = result.stdout or ""
+    scores: Dict[str, Any] = {}
+    for match in _SCORE_LINE_RE.finditer(output):
+        scores[match.group(1)] = float(match.group(2))
+
+    overall_match = _OVERALL_SCORE_RE.search(output)
+    if overall_match:
+        scores["overall"] = float(overall_match.group(1))
+
+    if not scores:
+        logger.warning("result_manager: no DCPerf score found in report score output")
+        return {}
+
+    scores["raw_output"] = output
+    return scores
 
 
 class ResultManager:
@@ -121,23 +167,50 @@ class ResultManager:
         )
 
     # ------------------------------------------------------------------
+    # benchpress benchmark_metrics_<run_id>/ preservation
+    # ------------------------------------------------------------------
+
+    def copy_benchmark_metrics(self, dcperf_root: str, run_id: str, run_dir: Path) -> bool:
+        """Copy benchpress's own `benchmark_metrics_<run_id>/` folder into run_dir.
+
+        benchpress writes per-instance CSVs/logs (feedsim per-instance QPS,
+        tao_bench per-server CSVs, video per-level results, etc.) into this
+        folder under dcperf_root -- previously left behind and never
+        captured into our organized results/ directory.
+        """
+        src = Path(dcperf_root) / f"benchmark_metrics_{run_id}"
+        if not src.exists():
+            self.logger.warning("result_manager: %s not found, nothing to preserve", src)
+            return False
+
+        dest = Path(run_dir) / "benchmark_metrics"
+        try:
+            shutil.copytree(src, dest, dirs_exist_ok=True)
+            self.logger.info("result_manager: copied %s -> %s", src, dest)
+            return True
+        except OSError as exc:
+            self.logger.error("result_manager: failed to copy %s: %s", src, exc)
+            return False
+
+    # ------------------------------------------------------------------
     # Master run summary
     # ------------------------------------------------------------------
 
-    def write_summary(self, all_results: List[Dict[str, Any]]) -> None:
+    def write_summary(self, all_results: List[Dict[str, Any]], dcperf_score: Optional[Dict[str, Any]] = None) -> None:
         """Write run_summary.json and run_summary.txt into the top-level results dir."""
         summary_dir = self.base_results_dir / f"summary_{self.timestamp}"
         summary_dir.mkdir(parents=True, exist_ok=True)
 
         (summary_dir / "run_summary.json").write_text(
-            json.dumps(all_results, indent=2, default=str), encoding="utf-8"
+            json.dumps({"results": all_results, "dcperf_score": dcperf_score or {}}, indent=2, default=str),
+            encoding="utf-8",
         )
 
-        text = self._render_summary_text(all_results)
+        text = self._render_summary_text(all_results, dcperf_score)
         (summary_dir / "run_summary.txt").write_text(text, encoding="utf-8")
         print(text)
 
-    def _render_summary_text(self, all_results: List[Dict[str, Any]]) -> str:
+    def _render_summary_text(self, all_results: List[Dict[str, Any]], dcperf_score: Optional[Dict[str, Any]] = None) -> str:
         hostname = socket.gethostname()
         cpu_model = self._read_cpu_model()
         bar = "=" * 64
@@ -171,6 +244,22 @@ class ResultManager:
         total = len(all_results)
         lines.append(f"Total: {total} workloads | {pass_count} PASS | {fail_count} FAIL")
         lines.append(f"Results: results/{self.timestamp}/")
+        lines.append(bar)
+
+        lines.append("")
+        lines.append(bar)
+        lines.append("DCPerf Benchmark Scores")
+        lines.append(bar)
+        per_benchmark = {k: v for k, v in (dcperf_score or {}).items() if k not in ("overall", "raw_output")}
+        if per_benchmark:
+            for name, value in per_benchmark.items():
+                lines.append(f"{name:<14}: {value}")
+            lines.append(thin)
+            overall = (dcperf_score or {}).get("overall")
+            if overall is not None:
+                lines.append(f"DCPerf Overall Score : {overall}")
+        else:
+            lines.append("DCPerf Score: Not available (run all 5 benchmarks for overall score)")
         lines.append(bar)
         return "\n".join(lines) + "\n"
 

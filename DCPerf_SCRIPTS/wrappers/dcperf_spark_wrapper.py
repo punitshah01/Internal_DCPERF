@@ -20,9 +20,9 @@ _WRAPPERS_DIR = Path(__file__).resolve().parent
 if str(_WRAPPERS_DIR) not in sys.path:
     sys.path.insert(0, str(_WRAPPERS_DIR))
 
-from base_wrapper import BaseWrapper
-from modules.core_scaler import get_total_cores, scale_generator, set_core_count
-from modules.os_tuner import tune_spark_post_run
+from dcperf_base_wrapper import BaseWrapper
+from modules.dcperf_core_scaler import get_total_cores, scale_generator, set_core_count
+from modules.dcperf_os_tuner import tune_spark_post_run
 
 _RECOMMENDED_KERNEL = "6.4.3-0_fbk0_rc7_540_g30a9329b6cec"
 _JAVA8_GLOB = "/usr/lib/jvm/java-1.8.0-openjdk*/jre/bin/java"
@@ -42,6 +42,9 @@ class SparkWrapper(BaseWrapper):
     @classmethod
     def add_arguments(cls, parser) -> None:
         parser.add_argument("--spark-data-path", default=None, help="Falls back to config spark_data_path")
+        parser.add_argument("--ipv4", action="store_true", help="Use IPv4 (jobs.yml 'ipv4' var) if the system/network doesn't support IPv6")
+        parser.add_argument("--sanity", action="store_true", help="Run the I/O sanity check (fio) before the main workload")
+        parser.add_argument("--local-hostname", default=None, help="Override hostname if `hostname` output isn't resolvable")
         parser.add_argument("--core-scaling", action="store_true", help="Run a core-scaling sweep")
         parser.add_argument("--total-cores", type=int, default=None, help="Total cores for scaling sweep")
 
@@ -50,6 +53,17 @@ class SparkWrapper(BaseWrapper):
             self.args.spark_data_path = self.config_manager.require("spark_data_path")
         if self.args.metric == "emon" and not self.config.get("emon_event_file"):
             self.config["emon_event_file"] = self.config_manager.require("emon_event_file")
+
+    def get_job_vars(self) -> Dict[str, Any]:
+        """Forward --ipv4/--sanity/--local-hostname to benchpress via -i JSON."""
+        job_vars: Dict[str, Any] = {}
+        if self.args.ipv4:
+            job_vars["ipv4"] = 1
+        if self.args.sanity:
+            job_vars["sanity"] = 1
+        if self.args.local_hostname:
+            job_vars["local_hostname"] = self.args.local_hostname
+        return job_vars
 
     # ------------------------------------------------------------------
     # FIX 5: Spark full prerequisite sequence
@@ -369,6 +383,19 @@ class SparkWrapper(BaseWrapper):
 
     def parse_output(self, stdout: str) -> Dict[str, Any]:
         parsed: Dict[str, Any] = {}
+        bp = self.parse_benchpress_json(stdout)
+        metrics = bp.get("metrics", {})
+        if metrics:
+            if "execution_time_test_93586" in metrics:
+                parsed["runtime_s"] = float(metrics["execution_time_test_93586"])
+            if "queries_per_hour" in metrics:
+                parsed["throughput"] = float(metrics["queries_per_hour"])
+            if "score" in metrics:
+                parsed["score"] = float(metrics["score"])
+            elif "score" in bp:
+                parsed["score"] = float(bp["score"])
+            return parsed
+
         match = re.search(r"Total runtime[:\s]+([\d.]+)\s*s", stdout, re.IGNORECASE)
         if match:
             parsed["runtime_s"] = float(match.group(1))
@@ -381,10 +408,11 @@ class SparkWrapper(BaseWrapper):
         return {
             "runtime_s": parsed.get("runtime_s", 0.0),
             "throughput": parsed.get("throughput", 0.0),
+            "score": parsed.get("score", 0.0),
         }
 
     def get_csv_schema(self) -> List[str]:
-        return ["spark_data_path", "cores_enabled", "runtime_s", "throughput"]
+        return ["spark_data_path", "cores_enabled", "runtime_s", "throughput", "score"]
 
     def run_core_scaling(self) -> int:
         total = self.args.total_cores or get_total_cores()

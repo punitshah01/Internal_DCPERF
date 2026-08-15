@@ -18,7 +18,7 @@ _WRAPPERS_DIR = Path(__file__).resolve().parent
 if str(_WRAPPERS_DIR) not in sys.path:
     sys.path.insert(0, str(_WRAPPERS_DIR))
 
-from base_wrapper import BaseWrapper
+from dcperf_base_wrapper import BaseWrapper
 
 
 class HealthCheckWrapper(BaseWrapper):
@@ -40,7 +40,22 @@ class HealthCheckWrapper(BaseWrapper):
         extra_args = ["-r", self.args.role] + extra_args
         return super().run_benchpress(job, extra_args)
 
+    def get_job_vars(self) -> Dict[str, Any]:
+        """Forward --clients to benchpress via -i JSON (jobs.yml 'clients' var, server role only).
+
+        Without this, run.sh's `IFS=',' read -r -a client_array <<< "$clients"`
+        gets an empty string and the server never pings/iperf3's any client.
+        """
+        if self.args.role == "server" and self.args.clients:
+            return {"clients": self.args.clients}
+        return {}
+
     def parse_output(self, stdout: str) -> Dict[str, Any]:
+        bp = self.parse_benchpress_json(stdout)
+        if bp.get("metrics"):
+            # health_check has no documented JSON KPI schema; fall through to
+            # the PASS/FAIL heuristic below but keep the JSON for the record.
+            pass
         parsed: Dict[str, Any] = {
             "network_pass": bool(re.search(r"\bconnected\b", stdout, re.IGNORECASE))
             and not re.search(r"\bunable to connect\b|error", stdout, re.IGNORECASE),

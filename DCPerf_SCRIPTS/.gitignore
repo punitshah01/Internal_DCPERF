@@ -1,0 +1,8 @@
+logs/
+results/
+dcperf_install_state.txt
+os_prereqs_installed.txt
+__pycache__/
+*.pyc
+config/dcperf_config.yaml
+# Note: dcperf_config.yaml.example IS tracked

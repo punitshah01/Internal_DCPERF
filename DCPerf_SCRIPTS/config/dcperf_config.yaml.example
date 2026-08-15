@@ -1,14 +1,14 @@
 # DCPerf_SCRIPTS setup configuration — TEMPLATE.
 #
-# Copy this file to setup_config.yaml and fill in every `null` value for
+# Copy this file to dcperf_config.yaml and fill in every `null` value for
 # the workloads you plan to run:
 #
-#   cp config/setup_config.yaml.example config/setup_config.yaml
-#   vim config/setup_config.yaml
+#   cp config/dcperf_config.yaml.example config/dcperf_config.yaml
+#   vim config/dcperf_config.yaml
 #
 # Any key left `null` that a wrapper actually needs will be prompted for
 # interactively on first use (ConfigManager.require()) and the answer is
-# saved back to setup_config.yaml automatically — you are only asked once.
+# saved back to dcperf_config.yaml automatically — you are only asked once.
 
 # ---------------------------------------------------------------------------
 # Core paths
@@ -132,3 +132,32 @@ java_path: null
 # Example: true
 # Required: No — defaults to false (safer default, opt-in).
 clear_tmp: false
+
+# ---------------------------------------------------------------------------
+# MediaWiki / Spark extras discovered during HIGH-priority fixes
+# ---------------------------------------------------------------------------
+
+# What it is: path to a locally-provided nginx-1.22.tar.gz, copied to
+#             /usr/local before MediaWiki install.
+# Where to find it: http://nginx.org/download/nginx-1.22.0.tar.gz
+# Example: /root/downloads/nginx-1.22.tar.gz
+# Required: No — warns and skips the copy if unset.
+nginx_1_22_tarball_path: null
+
+# What it is: number of NVMe namespaces/subsystems for setup_nvmet.py
+#             (documentation aliases matching the README's naming; the
+#             values SparkWrapper actually reads are nvme_n/nvme_s above).
+# Example: 3 / 6
+# Required: No.
+nvme_tcp_n: 3
+nvme_tcp_s: 6
+
+# What it is: default django_workload --iterations value.
+# Example: 1 (quick, ~5min) / 3 (standard, ~15min) / 7 (full upstream default, ~35min)
+# Required: No — defaults to 3.
+django_default_iterations: 3
+
+# What it is: default tao_bench --mode.
+# Example: standalone (validated) or autoscale (experimental)
+# Required: No — defaults to standalone.
+tao_bench_mode: standalone

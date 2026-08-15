@@ -1,4 +1,4 @@
-"""Loads and persists DCPerf_SCRIPTS/config/setup_config.yaml.
+"""Loads and persists DCPerf_SCRIPTS/config/dcperf_config.yaml.
 
 Centralizes every value that used to be hardcoded across the 5 legacy
 scripts (sep_path, emon_user, cores=288, db_client_ip, etc.). Missing
@@ -12,6 +12,32 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
+
+
+def detect_distro() -> str:
+    """Return 'centos8', 'centos9', 'ubuntu', or 'unknown' from /etc/os-release.
+
+    Used to select the correct per-OS prerequisite install sequence from the
+    official DCPerf README (CentOS Stream 8/9 vs Ubuntu 22.04 differ).
+    """
+    os_release = Path("/etc/os-release")
+    if not os_release.exists():
+        return "unknown"
+
+    try:
+        content = os_release.read_text(encoding="utf-8", errors="ignore").lower()
+    except OSError:
+        return "unknown"
+
+    if "ubuntu" in content:
+        return "ubuntu"
+    if "centos" in content or "rhel" in content or "rocky" in content or "almalinux" in content:
+        if 'version_id="8' in content or "version_id=8" in content:
+            return "centos8"
+        if 'version_id="9' in content or "version_id=9" in content:
+            return "centos9"
+        return "centos9"  # default to the currently-supported CentOS variant
+    return "unknown"
 
 
 class ConfigManager:

@@ -15,6 +15,7 @@ the fixed execution flow:
 from __future__ import annotations
 
 import argparse
+import json
 import platform
 import signal
 import socket
@@ -30,13 +31,14 @@ DCPERF_SCRIPTS_ROOT = SCRIPT_DIR.parent
 if str(DCPERF_SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(DCPERF_SCRIPTS_ROOT))
 
-from modules.config_manager import ConfigManager
-from modules.core_scaler import get_online_cores, get_total_cores
-from modules.emon_manager import EmonManager
-from modules.logger_setup import get_logger
-from modules.os_tuner import apply_all as apply_all_os_tuning
-from modules.perf_collector import PerfCollector
-from modules.result_manager import ResultManager
+from modules.dcperf_config_manager import ConfigManager
+from modules.dcperf_core_scaler import get_online_cores, get_total_cores
+from modules.dcperf_cpu_monitor import CpuMonitor
+from modules.dcperf_emon_manager import EmonManager
+from modules.dcperf_logger import get_logger
+from modules.dcperf_os_tuner import apply_all as apply_all_os_tuning
+from modules.dcperf_perf_collector import PerfCollector
+from modules.dcperf_result_manager import ResultManager
 
 # Module-level global so the signal handler can reach the running
 # benchpress subprocess regardless of which wrapper instance started it.
@@ -63,7 +65,7 @@ class BaseWrapper(ABC):
         self.logger = get_logger(self.get_workload_name(), DCPERF_SCRIPTS_ROOT / "logs")
         self.args = self._build_arg_parser().parse_args(argv)
 
-        config_path = DCPERF_SCRIPTS_ROOT / "config" / "setup_config.yaml"
+        config_path = DCPERF_SCRIPTS_ROOT / "config" / "dcperf_config.yaml"
         self.config_manager = ConfigManager(config_path, self.logger)
         self.config: Dict[str, Any] = self.config_manager.load()
 
@@ -76,6 +78,8 @@ class BaseWrapper(ABC):
         self.run_dir: Optional[Path] = None
         self._emon_process: Optional[subprocess.Popen] = None
         self._rows: List[Dict[str, Any]] = []
+        self.cpu_monitor: Optional[CpuMonitor] = None
+        self._cpu_monitor_result: Dict[str, Any] = {}
 
         _active_wrapper = self
 
@@ -120,6 +124,7 @@ class BaseWrapper(ABC):
         parser.add_argument("--metric", choices=["emon", "perf", "none"], default="none", help="Telemetry collection mode")
         parser.add_argument("--runs", type=int, default=None, help="Number of runs (default from config)")
         parser.add_argument("--cores", type=int, default=None, help="Number of cores to enable before running")
+        parser.add_argument("--force", "-f", action="store_true", help="Force reinstall (passed through to benchpress_cli.py install -f)")
         cls.add_arguments(parser)
         return parser
 
@@ -133,6 +138,17 @@ class BaseWrapper(ABC):
 
     def validate_config(self) -> None:
         """Default no-op; subclasses override to require() workload-specific keys."""
+
+    def get_job_vars(self) -> Dict[str, Any]:
+        """Job vars to forward to benchpress as `-i '{...}'` (jobs.yml template substitution).
+
+        Default is empty (no override). Subclasses that collect CLI args
+        meant to influence job behavior (duration, instances, db_addr,
+        encoder level, etc.) MUST override this and return them here --
+        collecting a CLI arg without returning it from get_job_vars() means
+        it is silently discarded and benchpress runs with jobs.yml defaults.
+        """
+        return {}
 
     def pre_install_hook(self) -> bool:
         """Called by dcperf_master_setup before `benchpress_cli.py install <job>`.
@@ -181,10 +197,24 @@ class BaseWrapper(ABC):
         tuning_results = apply_all_os_tuning(self.get_workload_name(), self.config, self.logger, self.args.dry_run)
         if self.run_dir is not None:
             self.result_manager.save_metrics(self.run_dir, {"os_tuning": tuning_results})
+
+        if not self.args.dry_run:
+            self.cpu_monitor = CpuMonitor(self.get_workload_name(), self.logger)
+            self.cpu_monitor.start()
+
         return tuning_results
 
     def post_run(self) -> None:
-        """Hook for post-run cleanup; no-op by default. Spark overrides this."""
+        """Hook for post-run cleanup. Stops the CPU monitor before result writing.
+
+        Subclasses that override this (e.g. Spark's post-run cache cleanup)
+        must call super().post_run() to still get the CPU monitor stopped.
+        """
+        if self.cpu_monitor is not None:
+            self._cpu_monitor_result = self.cpu_monitor.stop()
+            self.cpu_monitor = None
+            if self._cpu_monitor_result.get("within_target") is False:
+                self.logger.warning("base_wrapper: %s", self._cpu_monitor_result.get("warning"))
 
     def get_benchpress_global_args(self) -> List[str]:
         """Optional `-b <benchmarks_file>` / `-j <jobs_file>` overrides.
@@ -250,6 +280,34 @@ class BaseWrapper(ABC):
             print(f"Output Directory: {self.run_dir.resolve()}")
 
     # ------------------------------------------------------------------
+    # benchpress result parsing (JSON "Results Report:" block)
+    # ------------------------------------------------------------------
+
+    def parse_benchpress_json(self, stdout: str) -> Dict[str, Any]:
+        """Extract benchpress's structured `Results Report:` JSON blob from stdout.
+
+        benchpress prints a JSON object (benchmark_name, metrics, score,
+        run_id, timestamp, machines, ...) after a `Results Report:` marker
+        line. This is the authoritative source for KPIs -- regexing raw
+        tool-log text is fragile and often wrong. Returns {} if the marker
+        or a parseable JSON object is not found (e.g. dry-run stdout).
+        """
+        marker = "Results Report:"
+        idx = stdout.find(marker)
+        if idx == -1:
+            return {}
+        tail = stdout[idx + len(marker):]
+        brace_idx = tail.find("{")
+        if brace_idx == -1:
+            return {}
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(tail[brace_idx:])
+            return obj if isinstance(obj, dict) else {}
+        except ValueError:
+            self.logger.warning("base_wrapper: could not parse benchpress Results Report JSON")
+            return {}
+
+    # ------------------------------------------------------------------
     # Signal / failure safety
     # ------------------------------------------------------------------
 
@@ -306,11 +364,20 @@ class BaseWrapper(ABC):
             self.pre_run()
 
             extra_args: List[str] = []
+            job_vars = self.get_job_vars()
+            if job_vars:
+                extra_args += ["-i", json.dumps(job_vars)]
             returncode, stdout, stderr = self.run_benchpress(self.get_job_name(), extra_args)
 
             self.result_manager.save_stdout(self.run_dir, stdout)
             self.result_manager.save_stderr(self.run_dir, stderr)
             self.result_manager.save_command(self.run_dir, " ".join(sys.argv))
+
+            bp_json = self.parse_benchpress_json(stdout)
+            run_id = bp_json.get("run_id")
+            dcperf_root = self.config.get("dcperf_root")
+            if run_id and dcperf_root:
+                self.result_manager.copy_benchmark_metrics(dcperf_root, run_id, self.run_dir)
 
             parsed = self.parse_output(stdout)
             kpis = self.get_kpis(parsed)
@@ -340,7 +407,10 @@ class BaseWrapper(ABC):
                 self.run_dir,
                 {"orch_run_id": self.args.orch_run_id, "rows": self._rows},
             )
-            self.result_manager.save_metrics(self.run_dir, kpis)
+            metrics_payload = dict(kpis)
+            if self._cpu_monitor_result:
+                metrics_payload["cpu_utilization"] = self._cpu_monitor_result
+            self.result_manager.save_metrics(self.run_dir, metrics_payload)
             self.print_summary(status, kpis)
 
         return 0 if status == "PASS" else 1

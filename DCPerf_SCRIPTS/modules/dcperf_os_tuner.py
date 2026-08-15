@@ -215,8 +215,10 @@ def tune_tao_bench(logger, dry_run: bool = False) -> Dict[str, str]:
         ("kernel.nmi_watchdog", "0"),
         ("net.core.rmem_max", "134217728"),
         ("net.core.wmem_max", "134217728"),
-        ("net.ipv4.tcp_rmem", "134217728"),
-        ("net.ipv4.tcp_wmem", "134217728"),
+        # tcp_rmem/tcp_wmem require 3 space-separated values (min default max),
+        # not a single scalar -- a bare "134217728" is rejected/misconfigured by sysctl.
+        ("net.ipv4.tcp_rmem", "4096 87380 134217728"),
+        ("net.ipv4.tcp_wmem", "4096 87380 134217728"),
         ("net.ipv4.tcp_syncookies", "0"),
         ("net.ipv4.tcp_abort_on_overflow", "1"),
         ("vm.drop_caches", "3"),

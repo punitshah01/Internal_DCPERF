@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 try:
-    from .logger_setup import get_logger, log_section
+    from .dcperf_logger import get_logger, log_section
 except ImportError:  # Direct execution for the self-test.
-    from logger_setup import get_logger, log_section
+    from dcperf_logger import get_logger, log_section
 
 
 @dataclass
@@ -322,7 +322,7 @@ if __name__ == "__main__":
     from pathlib import Path
 
     log_dir = Path(__file__).parent.parent / "logs"
-    logger = get_logger("system_check_test", log_dir)
+    logger = get_logger("dcperf_system_check_test", log_dir)
     info = detect_system(logger)
     assert info.logical_cores > 0, "logical_cores must be > 0"
     assert info.total_ram_gb > 0, "total_ram_gb must be > 0"

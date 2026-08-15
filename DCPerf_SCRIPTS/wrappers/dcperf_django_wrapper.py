@@ -17,8 +17,8 @@ _WRAPPERS_DIR = Path(__file__).resolve().parent
 if str(_WRAPPERS_DIR) not in sys.path:
     sys.path.insert(0, str(_WRAPPERS_DIR))
 
-from base_wrapper import BaseWrapper
-from modules.core_scaler import get_total_cores, scale_generator, set_core_count
+from dcperf_base_wrapper import BaseWrapper
+from modules.dcperf_core_scaler import get_total_cores, scale_generator, set_core_count
 
 
 class DjangoWrapper(BaseWrapper):
@@ -34,7 +34,8 @@ class DjangoWrapper(BaseWrapper):
     @classmethod
     def add_arguments(cls, parser) -> None:
         parser.add_argument("--role", choices=["db", "clientserver", "standalone"], default="clientserver")
-        parser.add_argument("--duration", default="180s", help="Siege duration, e.g. 180s")
+        parser.add_argument("--duration", default="5M", help="Siege duration per iteration, e.g. 5M (default upstream unit)")
+        parser.add_argument("--iterations", "-it", type=int, default=3, help="Number of iterations: 1 (quick, ~5min), 3 (standard, default), 7 (full upstream default)")
         parser.add_argument("--db-client-ip", default=None, help="DB client IP (falls back to config db_client_ip)")
         parser.add_argument("--core-scaling", action="store_true", help="Run a core-scaling sweep")
         parser.add_argument("--total-cores", type=int, default=None, help="Total cores for scaling sweep")
@@ -42,6 +43,30 @@ class DjangoWrapper(BaseWrapper):
     def validate_config(self) -> None:
         if not self.args.db_client_ip:
             self.args.db_client_ip = self.config_manager.require("db_client_ip")
+        self.config["db_client_ip"] = self.args.db_client_ip
+
+        if self.args.iterations not in (1, 3, 7):
+            self.logger.warning(
+                "django_wrapper: --iterations %s is not one of the validated values (1, 3, 7); proceeding anyway",
+                self.args.iterations,
+            )
+        self.logger.info(
+            "django_wrapper: Running Django with %s iterations (~%s minutes estimated)",
+            self.args.iterations, self.args.iterations * 5,
+        )
+
+    def get_job_vars(self) -> Dict[str, Any]:
+        """Forward iterations/duration/db_addr to benchpress via -i JSON (jobs.yml vars).
+
+        db_addr is mandatory for the clientserver role -- without it the
+        job runs with jobs.yml's default empty db_addr and cannot connect
+        to Cassandra.
+        """
+        return {
+            "iterations": str(self.args.iterations),
+            "duration": self.args.duration,
+            "db_addr": self.config.get("db_client_ip", ""),
+        }
 
     def run_benchpress(self, job: str, extra_args: List[str]):
         extra_args = ["-r", self.args.role] + extra_args
@@ -53,7 +78,19 @@ class DjangoWrapper(BaseWrapper):
 
     def parse_output(self, stdout: str) -> Dict[str, Any]:
         parsed: Dict[str, Any] = {"raw_lines": stdout.count("\n")}
-        # Siege summary line: "Transaction rate:      123.45 trans/sec"
+        bp = self.parse_benchpress_json(stdout)
+        metrics = bp.get("metrics", {})
+        if metrics:
+            # benchpress's official JSON KPI: "Transaction rate_trans/sec"
+            if "Transaction rate_trans/sec" in metrics:
+                parsed["qps"] = float(metrics["Transaction rate_trans/sec"])
+            if "P99_secs" in metrics:
+                parsed["p99_latency_ms"] = float(metrics["P99_secs"]) * 1000.0
+            if "score" in bp:
+                parsed["score"] = float(bp["score"])
+            return parsed
+
+        # Fallback for dry-run / older benchpress builds without JSON reporting.
         match = re.search(r"Transaction rate:\s*([\d.]+)\s*trans/sec", stdout)
         if match:
             parsed["qps"] = float(match.group(1))
@@ -66,10 +103,11 @@ class DjangoWrapper(BaseWrapper):
         return {
             "qps": parsed.get("qps", 0.0),
             "p99_latency_ms": parsed.get("p99_latency_ms", 0.0),
+            "score": parsed.get("score", 0.0),
         }
 
     def get_csv_schema(self) -> List[str]:
-        return ["role", "duration", "db_client_ip", "cores_enabled", "qps", "p99_latency_ms"]
+        return ["role", "duration", "iterations", "db_client_ip", "cores_enabled", "qps", "p99_latency_ms", "score"]
 
     def run_core_scaling(self) -> int:
         total = self.args.total_cores or get_total_cores()

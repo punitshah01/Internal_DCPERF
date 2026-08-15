@@ -21,16 +21,22 @@ _WRAPPERS_DIR = Path(__file__).resolve().parent
 if str(_WRAPPERS_DIR) not in sys.path:
     sys.path.insert(0, str(_WRAPPERS_DIR))
 
-from base_wrapper import BaseWrapper
-from modules.core_scaler import get_total_cores, scale_generator, set_core_count
+from dcperf_base_wrapper import BaseWrapper
+from modules.dcperf_core_scaler import get_total_cores, scale_generator, set_core_count
 
 
 class VideoWrapper(BaseWrapper):
+    # Used by dcperf_master_setup.py for the install phase -- a single
+    # install job builds ffmpeg + all 3 encoders, so install is not
+    # encoder-specific even though the run job name is (see get_job_name()).
     JOB_NAME = "video_transcode_bench_svt"
     WORKLOAD_NAME = "video_transcode_bench"
 
     def get_job_name(self) -> str:
-        return self.JOB_NAME
+        # Run job name switches with the selected encoder (video_transcode_bench_svt
+        # is the only one confirmed in the official README; x264/aom follow the
+        # same naming convention in jobs.yml).
+        return f"video_transcode_bench_{self.args.encoder}"
 
     def get_workload_name(self) -> str:
         return self.WORKLOAD_NAME
@@ -70,12 +76,21 @@ class VideoWrapper(BaseWrapper):
         cuts_dir = dataset_dir / "cuts"
 
         if cuts_dir.exists() and any(cuts_dir.iterdir()):
-            self.logger.info("video_wrapper: dataset already extracted at %s", cuts_dir)
+            self.logger.info("video_wrapper: Dataset already extracted, skipping")
             return True
 
         if not cuts_zip.exists():
-            self.logger.warning("video_wrapper: %s not found, nothing to unzip", cuts_zip)
-            return True
+            self.logger.error(
+                "video_wrapper: %s not found. Manually download the El Fuente dataset "
+                "(registration required at https://media.xiph.org/video/derf/) and place "
+                "cuts.zip at %s, or extract the .y4m files directly into %s.",
+                cuts_zip, dataset_dir, cuts_dir,
+            )
+            return False
+
+        if cuts_zip.stat().st_size == 0:
+            self.logger.error("video_wrapper: %s appears empty or corrupt (0 bytes)", cuts_zip)
+            return False
 
         cmd = ["unzip", str(cuts_zip), "-d", str(dataset_dir)]
         self.logger.info(
@@ -89,10 +104,18 @@ class VideoWrapper(BaseWrapper):
         env["UNZIP_DISABLE_ZIPBOMB_DETECTION"] = "TRUE"
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
-            return True
         except subprocess.CalledProcessError as exc:
             self.logger.error("video_wrapper: dataset unzip failed: %s", exc.stderr)
             return False
+
+        if not any(cuts_dir.glob("*.y4m")):
+            self.logger.error(
+                "video_wrapper: unzip completed but no .y4m files found in %s. Check cuts.zip contents.",
+                cuts_dir,
+            )
+            return False
+
+        return True
 
     def setup_telemetry(self, emon_output_file: str) -> None:
         super().setup_telemetry(emon_output_file)
@@ -101,8 +124,23 @@ class VideoWrapper(BaseWrapper):
             ramp_log = str(self.run_dir / "stdout.log") if self.run_dir else "/tmp/vt_ramp.log"
             self.logger.info("video_wrapper: perf collection armed (ramp-gated, runs after workload starts)")
 
+    def get_job_vars(self) -> Dict[str, Any]:
+        """Forward --runtime to benchpress via -i JSON (runtime job var)."""
+        return {"runtime": self.args.runtime}
+
     def parse_output(self, stdout: str) -> Dict[str, Any]:
         parsed: Dict[str, Any] = {}
+        bp = self.parse_benchpress_json(stdout)
+        metrics = bp.get("metrics", {})
+        if metrics:
+            if "throughput_all_levels_hmean_MBps" in metrics:
+                parsed["throughput_mbps"] = float(metrics["throughput_all_levels_hmean_MBps"])
+            if "score" in metrics:
+                parsed["score"] = float(metrics["score"])
+            elif "score" in bp:
+                parsed["score"] = float(bp["score"])
+            return parsed
+
         match = re.search(r"FPS[:\s]+([\d.]+)", stdout, re.IGNORECASE)
         if match:
             parsed["fps"] = float(match.group(1))
@@ -113,12 +151,14 @@ class VideoWrapper(BaseWrapper):
 
     def get_kpis(self, parsed: Dict[str, Any]) -> Dict[str, Any]:
         return {
+            "throughput_mbps": parsed.get("throughput_mbps", 0.0),
+            "score": parsed.get("score", 0.0),
             "fps": parsed.get("fps", 0.0),
             "encode_time_s": parsed.get("encode_time_s", 0.0),
         }
 
     def get_csv_schema(self) -> List[str]:
-        return ["encoder", "runtime", "cores_enabled", "fps", "encode_time_s"]
+        return ["encoder", "runtime", "cores_enabled", "throughput_mbps", "score"]
 
     def run_core_scaling(self) -> int:
         total = self.args.total_cores or get_total_cores()

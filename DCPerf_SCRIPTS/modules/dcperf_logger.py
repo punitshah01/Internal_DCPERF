@@ -82,7 +82,7 @@ def log_section(logger: logging.Logger, title: str) -> None:
 
 if __name__ == "__main__":
     with TemporaryDirectory() as temporary_dir:
-        test_logger = get_logger("logger_setup_self_test", Path(temporary_dir))
+        test_logger = get_logger("dcperf_logger_self_test", Path(temporary_dir))
         test_logger.debug("debug test message")
         test_logger.info("info test message")
         test_logger.warning("warning test message")

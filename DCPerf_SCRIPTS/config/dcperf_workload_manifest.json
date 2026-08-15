@@ -139,7 +139,9 @@
     "notes": "The documented distributed setup requires one compute node and one or more storage nodes. Recommended storage-node resources are at least 26 cores and 64 GB RAM, at least 500 GB combined free storage, NVMe SSDs, and at least 50 Gbps aggregate network bandwidth. NVMe-over-TCP kernel support and IOMMU passthrough configuration may be required."
   },
   "tao_bench": {
-    "job_name": "tao_bench_autoscale",
+    "job_name": "tao_bench_standalone",
+    "alternate_job": "tao_bench_autoscale",
+    "validated_mode": "standalone",
     "benchmark_name": "tao_bench_autoscale",
     "min_ram_gb": null,
     "min_disk_gb": null,
