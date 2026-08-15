@@ -1,0 +1,70 @@
+# DCPerf_SCRIPTS setup configuration.
+# All values that were previously hardcoded across dj_perf.py, fs_perf.py,
+# mw_perf.py, sweep.py, vt_script.py live here instead.
+#
+# Keys set to `null` must be provided before the affected wrapper can run;
+# ConfigManager.require() will prompt for them interactively once and save
+# the answer back to this file so you are never asked again.
+
+# Root of the cloned DCPerf benchmark repo (contains benchpress_cli.py,
+# install.py, run.py, packages/, benchpress/). Auto-detected by walking up
+# from this file's location looking for benchpress/config/benchmarks.yml
+# when left null.
+dcperf_root: null
+
+# Intel SEP (EMON) installation directory.
+sep_path: /opt/intel/sep
+
+# EMON event definition file passed to `emon -v <event_file>`. Platform
+# specific (e.g. graniterapids_server_events_private.txt) — must be
+# supplied for the target SUT, no default is safe across platforms.
+emon_event_file: null
+
+# EMON / DCSOMETRICS upload user.
+emon_user: null
+
+# Mount path for the Spark dataset (spark_standalone workload).
+spark_data_path: null
+
+# Client IP used by django_workload's clientserver run mode.
+db_client_ip: null
+
+# Cores to enable per core-scaling sweep iteration.
+core_step: 16
+
+# Default number of repeated runs per workload when --runs is not given.
+default_runs: 3
+
+# Base directory for all results/<workload>_<timestamp>/ output.
+# Defaults to <dcperf_root>/../DCPerf_SCRIPTS/results when null.
+results_base_dir: null
+
+# El Fuente (.y4m) video dataset directory for video_transcode_bench.
+video_dataset_path: null
+
+# --- Spark prerequisite-check settings (verify_spark_prerequisites) ---
+
+# Directory containing custom kernel-*.rpm files. Leave null to skip
+# custom kernel installation (kernel version check will only WARN).
+spark_kernel_rpms_path: null
+
+# Network interface name to configure for NVMe-TCP traffic.
+nvme_tcp_interface: null
+
+# Whether the target platform requires IOMMU passthrough for NVMe-TCP.
+iommu_passthrough: false
+
+# Whether to run packages/spark_standalone/templates/nvme_tcp/setup_nvmet.py.
+nvme_tcp_setup: false
+
+# NVMe target/subsystem numbers passed to setup_nvmet.py -n/-s.
+nvme_n: null
+nvme_s: null
+
+# Java 8 path, auto-populated by SparkWrapper._check_java_version() once found.
+java_path: null
+
+# --- os_tuner.py Part B settings ---
+
+# Whether os_tuner.clear_tmp() is allowed to run `rm -rf /tmp/*`.
+clear_tmp: false

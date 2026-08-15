@@ -1,0 +1,251 @@
+{
+  "django_workload": {
+    "job_name": "django_workload_default",
+    "benchmark_name": "django_workload",
+    "min_ram_gb": null,
+    "min_disk_gb": null,
+    "required_user_files": [],
+    "os_packages": [
+      "git",
+      "memcached",
+      "libmemcached-devel or libmemcached-dev",
+      "zlib-devel or zlib1g-dev",
+      "screen",
+      "python36",
+      "python36-devel",
+      "python3-numpy",
+      "python3-dev",
+      "JDK 8"
+    ],
+    "supported_os": [
+      "Ubuntu 22.04 x86_64",
+      "Ubuntu 22.04 aarch64",
+      "CentOS 9 x86_64",
+      "Other CentOS/RHEL-like systems supported by the installer"
+    ],
+    "notes": "Two-machine deployment is recommended: Cassandra database server plus Django server/client. Standalone mode is supported. Recommended network latency between machines is 0.1-0.15 ms. The database address is supplied at run time."
+  },
+  "feedsim": {
+    "job_name": "feedsim_autoscale",
+    "benchmark_name": "feedsim_autoscale",
+    "min_ram_gb": null,
+    "min_disk_gb": null,
+    "required_user_files": [],
+    "os_packages": [
+      "bc",
+      "ninja-build",
+      "flex",
+      "bison",
+      "git",
+      "texinfo",
+      "binutils-devel or binutils-dev",
+      "libsodium-devel or libsodium-dev",
+      "libunwind-devel or libunwind-dev",
+      "bzip2",
+      "bzip2-devel",
+      "double-conversion-devel",
+      "libzstd-devel",
+      "lz4-devel",
+      "xz-devel",
+      "snappy-devel",
+      "libtool",
+      "openssl-devel",
+      "zlib-devel",
+      "libdwarf",
+      "libdwarf-devel",
+      "libaio-devel",
+      "libatomic",
+      "patch",
+      "jq"
+    ],
+    "supported_os": [
+      "Ubuntu x86_64",
+      "Ubuntu aarch64",
+      "CentOS/RHEL-like systems supported by the installer"
+    ],
+    "notes": "The autoscale job creates approximately one workload instance per 100 CPU cores. CPU boost is recommended. The target is maximum QPS while maintaining p95 latency at or below 500 ms."
+  },
+  "health_check": {
+    "job_name": "health_check",
+    "benchmark_name": "health_check",
+    "min_ram_gb": null,
+    "min_disk_gb": null,
+    "required_user_files": [],
+    "os_packages": [
+      "iperf3",
+      "g++",
+      "pthread development support",
+      "mm-mem dependencies from scripts/install_deps.py"
+    ],
+    "supported_os": [
+      "Ubuntu",
+      "CentOS",
+      "x86_64 systems using mm-mem",
+      "aarch64 systems using loaded-latency"
+    ],
+    "notes": "Network tests require client or auxiliary machines. The workload measures memory bandwidth/latency, network latency/bandwidth, and nanosleep scheduling overhead."
+  },
+  "mediawiki": {
+    "job_name": "oss_performance_mediawiki_mlp",
+    "benchmark_name": "oss_performance_mediawiki",
+    "min_ram_gb": null,
+    "min_disk_gb": null,
+    "required_user_files": [
+      "HHVM 3.30 binary package or locally built HHVM 3.30 installation"
+    ],
+    "os_packages": [
+      "libevent-dev or libevent-devel",
+      "zlib",
+      "zlib1g",
+      "zlib1g-dev or zlib-devel",
+      "php-common",
+      "php-cli",
+      "php-dev or php-devel",
+      "php-json when required by Composer",
+      "unzip",
+      "nginx",
+      "mariadb-server"
+    ],
+    "supported_os": [
+      "CentOS 8 x86_64",
+      "CentOS 9 x86_64",
+      "CentOS 9 aarch64",
+      "Ubuntu 22.04 x86_64",
+      "Ubuntu 22.04 aarch64"
+    ],
+    "notes": "HHVM 3.30 is required. SELinux must be disabled. MariaDB and nginx are installed/configured. CPU boost is relevant for high-core-count runs. The default load generator is wrk."
+  },
+  "spark_standalone": {
+    "job_name": "spark_standalone_remote",
+    "benchmark_name": "spark_standalone",
+    "min_ram_gb": null,
+    "min_disk_gb": 500,
+    "required_user_files": [
+      "Spark dataset",
+      "NVMe storage setup mounted at the configured Spark data path"
+    ],
+    "os_packages": [
+      "openjdk-8-jdk or java-1.8.0-openjdk",
+      "fio",
+      "git-lfs"
+    ],
+    "supported_os": [
+      "Linux systems with NVMe-over-TCP support",
+      "CentOS 8",
+      "Ubuntu systems supported by the installer",
+      "x86_64",
+      "aarch64"
+    ],
+    "notes": "The documented distributed setup requires one compute node and one or more storage nodes. Recommended storage-node resources are at least 26 cores and 64 GB RAM, at least 500 GB combined free storage, NVMe SSDs, and at least 50 Gbps aggregate network bandwidth. NVMe-over-TCP kernel support and IOMMU passthrough configuration may be required."
+  },
+  "tao_bench": {
+    "job_name": "tao_bench_autoscale",
+    "benchmark_name": "tao_bench_autoscale",
+    "min_ram_gb": null,
+    "min_disk_gb": null,
+    "required_user_files": [],
+    "os_packages": [
+      "cmake",
+      "iperf3",
+      "autoconf",
+      "automake",
+      "flex",
+      "bison",
+      "libevent-dev or libevent-devel",
+      "openssl",
+      "openssl-devel or libssl-dev",
+      "libzstd-dev or libzstd-devel",
+      "lz4",
+      "liblz4-dev or lz4-devel",
+      "xzip or xz-devel",
+      "libsnappy-dev or snappy-devel",
+      "zlib1g-dev or zlib-devel",
+      "bzip2",
+      "libaio-dev or libaio-devel",
+      "libunwind-dev or libunwind-devel",
+      "patch",
+      "double-conversion development package",
+      "libsodium-dev or libsodium-devel",
+      "fmt development package",
+      "libtool",
+      "perl",
+      "git",
+      "python3-dev or python3-devel",
+      "pkg-config",
+      "libpcre3-dev or pcre-devel",
+      "gflags development package version 2.2.2",
+      "glog development package"
+    ],
+    "supported_os": [
+      "CentOS Stream 8",
+      "CentOS Stream 9",
+      "Ubuntu systems supported by the installer",
+      "x86_64",
+      "aarch64"
+    ],
+    "notes": "CentOS Stream 8 with Linux 5.19 is recommended. Three machines are recommended: one server and two clients. Recommended network latency is 0.1-0.15 ms, with at least 10 Gbps for systems up to 72 logical cores and 20 Gbps above 72 logical cores. IOMMU passthrough is required when IOMMU is enabled."
+  },
+  "video_transcode_bench": {
+    "job_name": "video_transcode_bench_svt",
+    "benchmark_name": "video_transcode_bench",
+    "min_ram_gb": null,
+    "min_disk_gb": null,
+    "required_user_files": [
+      "El Fuente .y4m video dataset under benchmarks/video_transcode_bench/datasets/cuts"
+    ],
+    "os_packages": [
+      "cmake",
+      "autoconf",
+      "automake",
+      "flex",
+      "bison",
+      "meson",
+      "nasm",
+      "clang",
+      "patch",
+      "git",
+      "python3-dev or python3-devel",
+      "pkg-config",
+      "time",
+      "parallel",
+      "p7zip or p7zip-full"
+    ],
+    "supported_os": [
+      "Ubuntu systems supported by the installer",
+      "CentOS systems supported by the installer",
+      "x86_64",
+      "aarch64"
+    ],
+    "notes": "The installer builds FFmpeg and the SVT-AV1, AOM, x264, and VMAF dependencies. CPU boost is recommended. The dataset requires manual download because the source site requires registration."
+  },
+  "wdl_bench": {
+    "job_name": "folly_single_core",
+    "benchmark_name": "wdl_bench",
+    "min_ram_gb": null,
+    "min_disk_gb": null,
+    "required_user_files": [],
+    "os_packages": [
+      "cmake",
+      "autoconf",
+      "automake",
+      "flex",
+      "bison",
+      "meson",
+      "nasm",
+      "clang",
+      "patch",
+      "git",
+      "tar",
+      "unzip",
+      "perl",
+      "openssl",
+      "openssl-devel",
+      "python3-dev or python3-devel"
+    ],
+    "supported_os": [
+      "Ubuntu systems supported by the installer",
+      "CentOS systems supported by the installer"
+    ],
+    "notes": "WDLBench contains folly, lzbench, OpenSSL, and fbthrift-based workloads. Jobs support single-core, all-core, multi-threaded, individual folly benchmarks, compression, and crypto modes."
+  }
+}

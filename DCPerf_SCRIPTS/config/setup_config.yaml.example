@@ -1,0 +1,134 @@
+# DCPerf_SCRIPTS setup configuration — TEMPLATE.
+#
+# Copy this file to setup_config.yaml and fill in every `null` value for
+# the workloads you plan to run:
+#
+#   cp config/setup_config.yaml.example config/setup_config.yaml
+#   vim config/setup_config.yaml
+#
+# Any key left `null` that a wrapper actually needs will be prompted for
+# interactively on first use (ConfigManager.require()) and the answer is
+# saved back to setup_config.yaml automatically — you are only asked once.
+
+# ---------------------------------------------------------------------------
+# Core paths
+# ---------------------------------------------------------------------------
+
+# What it is: absolute path to the cloned DCPerf repo root (contains
+#             benchpress_cli.py, benchpress/, packages/).
+# Where to find it: `git clone https://github.com/facebookresearch/DCPerf.git`
+#             then use that directory's absolute path.
+# Example: /root/DCPerf
+# Required: No — auto-detected by walking up from this file's location
+#           looking for benchpress/config/benchmarks.yml.
+dcperf_root: null
+
+# What it is: Intel SEP (EMON) installation directory.
+# Where to find it: wherever you installed Intel VTune/SEP.
+# Example: /opt/intel/sep
+# Required: No — only needed if you pass --emon/--metric emon.
+sep_path: /opt/intel/sep
+
+# ---------------------------------------------------------------------------
+# EMON telemetry
+# ---------------------------------------------------------------------------
+
+# What it is: EMON event definition file, platform-specific.
+# Where to find it: <sep_path>/config/edp/<platform>_server_events*.txt
+# Example: /opt/intel/sep/config/edp/graniterapids_server_events_private.txt
+# Required: Yes, only if using --emon/--metric emon.
+emon_event_file: null
+
+# What it is: EMON / DCSOMETRICS upload user/account name.
+# Where to find it: your DCSOMETRICS/Intel account username.
+# Example: jdoe
+# Required: Yes, only if using --emon/--metric emon.
+emon_user: null
+
+# ---------------------------------------------------------------------------
+# Workload-specific required paths
+# ---------------------------------------------------------------------------
+
+# What it is: mount path containing the Spark benchmark dataset.
+# Where to find it: provisioned NVMe storage node, typically /flash23.
+# Example: /flash23
+# Required: Yes, only for spark_standalone.
+spark_data_path: null
+
+# What it is: client IP for django_workload's clientserver run mode.
+# Where to find it: the IP of the Django app-server/client machine.
+# Example: 192.168.100.2
+# Required: Yes, only for django_workload in clientserver role.
+db_client_ip: null
+
+# What it is: directory holding the El Fuente (.y4m) video dataset.
+# Where to find it: manually downloaded (registration required) per
+#             packages/video_transcode_bench/README.md.
+# Example: /data/video_transcode_bench/datasets
+# Required: Yes, only for video_transcode_bench.
+video_dataset_path: null
+
+# ---------------------------------------------------------------------------
+# Core scaling / run defaults
+# ---------------------------------------------------------------------------
+
+# What it is: cores to enable per core-scaling sweep iteration.
+# Example: 16
+# Required: No.
+core_step: 16
+
+# What it is: default number of repeated runs per workload when --runs
+#             is not given on the CLI.
+# Example: 3
+# Required: No.
+default_runs: 3
+
+# What it is: base directory for all results/<workload>_<timestamp>/ output.
+# Example: /root/DCPerf_SCRIPTS/results
+# Required: No — defaults to DCPerf_SCRIPTS/results when null.
+results_base_dir: null
+
+# ---------------------------------------------------------------------------
+# Spark prerequisite-check settings (verify_spark_prerequisites)
+# ---------------------------------------------------------------------------
+
+# What it is: directory containing custom kernel-*.rpm files for the
+#             Spark-recommended kernel.
+# Example: /root/kernel-rpms
+# Required: No — leave null to skip custom kernel install (WARN only).
+spark_kernel_rpms_path: null
+
+# What it is: network interface name to configure for NVMe-TCP traffic.
+# Example: eth1
+# Required: No.
+nvme_tcp_interface: null
+
+# What it is: whether the platform requires IOMMU passthrough for NVMe-TCP.
+# Example: true
+# Required: No — defaults to false.
+iommu_passthrough: false
+
+# What it is: whether to run the NVMe-TCP setup_nvmet.py helper script.
+# Example: true
+# Required: No — defaults to false.
+nvme_tcp_setup: false
+
+# What it is: NVMe target/subsystem numbers passed to setup_nvmet.py -n/-s.
+# Example: 1 / 1
+# Required: Yes, only if nvme_tcp_setup is true.
+nvme_n: null
+nvme_s: null
+
+# What it is: Java 8 install path; auto-populated by SparkWrapper once found.
+# Example: /usr/lib/jvm/java-1.8.0-openjdk-1.8.0.372.b07-2.el9.x86_64/jre/bin
+# Required: No — leave null, it's discovered automatically.
+java_path: null
+
+# ---------------------------------------------------------------------------
+# os_tuner.py Part B settings
+# ---------------------------------------------------------------------------
+
+# What it is: whether os_tuner.clear_tmp() is allowed to run `rm -rf /tmp/*`.
+# Example: true
+# Required: No — defaults to false (safer default, opt-in).
+clear_tmp: false
