@@ -206,7 +206,7 @@ A `summary_<timestamp>/run_summary.json` + `run_summary.txt` is written once per
 - Cache/tmp cleanup (`tune_spark_post_run`) runs **after** every run, not before.
 
 ### video_transcode_bench
-- **Known issue — dataset unzip zipbomb false-positive:** the El Fuente dataset trips `unzip`'s zipbomb-ratio heuristic. `prepare_dataset()` unzips with `UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE`, validates `cuts.zip` exists and is non-empty, skips if already extracted, and verifies at least one `.y4m` file exists afterward.
+- **Dataset:** `prepare_dataset()` downloads the El Fuente dataset (`cuts.tar.gz`) from Intel Artifactory into `video_dataset_path`, extracts it, skips if already extracted, and verifies at least one `.y4m` file exists afterward. Override the source with `video_dataset_url`.
 - `--metric perf` is now wired to `dcperf_perf_collector` (previously accepted but silently did nothing).
 
 ### OS Tuning Applied Per Workload
@@ -245,7 +245,7 @@ A `summary_<timestamp>/run_summary.json` + `run_summary.txt` is written once per
 | `gengetopt: command not found` / FeedSim build fails | Handled automatically by `pre_install_patch()`; if all 3 mirrors fail, manually download `gengetopt-2.23.tar.xz` and place it in the FeedSim build downloads directory |
 | `HH\invariant_violation` in `SystemChecks::CheckCPUFreq()` | Handled automatically by `apply_mediawiki_patches()`; verify `oss-performance/base/SystemChecks.php` contains the disabled marker if it recurs |
 | TaoBench folly build fails on zlib download | Handled automatically by `pre_install_check()`; verify network access to `zlib.net` if it still fails |
-| Video dataset `unzip` reports "zip bomb" and aborts | Handled automatically by `prepare_dataset()`; if still failing, unzip manually with `UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE unzip cuts.zip` |
+| Video dataset download or extraction fails | Verify Artifactory access to `video_dataset_url`; retry manually with `wget <video_dataset_url> -O cuts.tar.gz && tar xzf cuts.tar.gz` inside `video_dataset_path` |
 | Spark run fails with NVMe-TCP errors | Run `python dcperf_run.py --workload spark_standalone --dry-run` first to see the full prerequisite check output; `nvmet`/`nvmet-tcp`/`nvmet-rdma` modules must be loaded |
 | `OS tuning requires sudo` FAIL in preflight | Run `sudo python dcperf_run.py ...` or add your user to sudoers for passwordless `sudo -n` |
 | `ConfigManager.require()` keeps prompting | The saved value didn't persist — check that `config/dcperf_config.yaml` is writable |

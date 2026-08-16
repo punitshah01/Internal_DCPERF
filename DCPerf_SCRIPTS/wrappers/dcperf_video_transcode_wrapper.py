@@ -24,6 +24,11 @@ if str(_WRAPPERS_DIR) not in sys.path:
 from dcperf_base_wrapper import BaseWrapper
 from modules.dcperf_core_scaler import get_total_cores, scale_generator, set_core_count
 
+_DATASET_URL = (
+    "https://af01p-or.devtools.intel.com/artifactory/"
+    "dpgpaivsoworkloads-or-local/base/workloads/dcperf/cuts.tar.gz"
+)
+
 
 class VideoWrapper(BaseWrapper):
     # Used by dcperf_master_setup.py for the install phase -- a single
@@ -52,20 +57,12 @@ class VideoWrapper(BaseWrapper):
         if not self.config.get("video_dataset_path"):
             self.config["video_dataset_path"] = self.config_manager.require("video_dataset_path")
 
-    # ------------------------------------------------------------------
-    # FIX 4: video dataset unzip (zipbomb detection disabled)
-    # ------------------------------------------------------------------
-
     def pre_run(self) -> Dict[str, Any]:
         self.prepare_dataset()
         return super().pre_run()
 
     def prepare_dataset(self) -> bool:
-        """Unzip the El Fuente (.y4m) dataset if not already extracted.
-
-        unzip's zipbomb-ratio heuristic false-positives on this dataset, so
-        UNZIP_DISABLE_ZIPBOMB_DETECTION=TRUE is required.
-        """
+        """Download and extract the El Fuente (.y4m) dataset if not already present."""
         dataset_path = self.config.get("video_dataset_path")
         if not dataset_path:
             self.logger.warning("video_wrapper: video_dataset_path not configured, skipping dataset prep")
@@ -79,11 +76,7 @@ class VideoWrapper(BaseWrapper):
             return True
 
         archive = dataset_dir / "cuts.tar.gz"
-        archive_url = self.config.get(
-            "video_dataset_url",
-            "https://af01p-or.devtools.intel.com/artifactory/"
-            "dpgpaivsoworkloads-or-local/base/workloads/dcperf/cuts.tar.gz",
-        )
+        archive_url = self.config.get("video_dataset_url") or _DATASET_URL
         if not archive.exists():
             self.logger.info("video_wrapper: downloading dataset archive from %s", archive_url)
             if self.args.dry_run:
@@ -116,7 +109,7 @@ class VideoWrapper(BaseWrapper):
 
         if not any(cuts_dir.glob("*.y4m")):
             self.logger.error(
-                "video_wrapper: unzip completed but no .y4m files found in %s. Check cuts.zip contents.",
+                "video_wrapper: extraction completed but no .y4m files found in %s. Check cuts.tar.gz contents.",
                 cuts_dir,
             )
             return False
