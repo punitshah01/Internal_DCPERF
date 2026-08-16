@@ -311,7 +311,7 @@ def _run_benchpress_system_check(config: Dict[str, Any], logger, dry_run: bool) 
         return "PASS", "[dry-run] not executed"
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, cwd=dcperf_root)
     except (subprocess.SubprocessError, OSError) as exc:
         return "WARN", f"system_check failed to run: {exc}"
 
@@ -416,7 +416,7 @@ def _install_workload(workload: str, wrapper_cls: Type[Any], config: Dict[str, A
         return True
 
     try:
-        subprocess.run(cmd, check=True, start_new_session=True)
+        subprocess.run(cmd, check=True, start_new_session=True, cwd=dcperf_root)
         _mark_installed(job_name)
         return True
     except subprocess.CalledProcessError as exc:

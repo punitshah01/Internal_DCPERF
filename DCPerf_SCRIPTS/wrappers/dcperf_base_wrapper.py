@@ -253,6 +253,7 @@ class BaseWrapper(ABC):
                 stderr=subprocess.PIPE,
                 text=True,
                 start_new_session=True,
+                cwd=dcperf_root,
             )
         except OSError as exc:
             self.logger.error("base_wrapper: failed to launch benchpress: %s", exc)
