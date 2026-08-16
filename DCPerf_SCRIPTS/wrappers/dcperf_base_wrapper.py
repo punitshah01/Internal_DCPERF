@@ -19,6 +19,7 @@ import json
 import platform
 import re
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -323,12 +324,15 @@ class BaseWrapper(ABC):
         cli = Path(dcperf_root) / "benchpress_cli.py"
         cmd = [sys.executable, "-u", str(cli)] + self.get_benchpress_global_args() + ["run", job] + extra_args
 
+        # benchpress.log is a single cumulative file (never rotated by benchpress
+        # itself); truncate before every run so the copy captured after the run
+        # holds only this run's output, from the very first line.
+        self._reset_ramp_log(str(Path(dcperf_root) / "benchpress.log"))
+
         if self.args.tmc:
             if not self.args.dry_run and not self.tmc_runner.is_available():
                 return 1, "", "tmc not found on PATH"
             profile = self._resolve_tmc_profile()
-            ramp_log = profile.get("ramp_log")
-            self._reset_ramp_log(ramp_log)
             inner = " ".join(shlex.quote(part) for part in cmd)
             # tmc runs from the results directory so its -d/-D stay relative;
             # benchpress still needs dcperf_root as its own working directory.
@@ -343,13 +347,36 @@ class BaseWrapper(ABC):
             rc, stdout, stderr = self._run_streamed(tmc_cmd, cwd=tmc_cwd)
             self._check_ramp_detection(stdout, profile)
             self._capture_tmc_result_dir(stdout)
+            self._copy_benchpress_log(dcperf_root)
             return rc, stdout, stderr
 
         self.logger.info("base_wrapper: run_benchpress: %s", " ".join(cmd))
         if self.args.dry_run:
             return 0, "[dry-run] benchpress not executed", ""
 
-        return self._run_streamed(cmd, cwd=dcperf_root)
+        rc, stdout, stderr = self._run_streamed(cmd, cwd=dcperf_root)
+        self._copy_benchpress_log(dcperf_root)
+        return rc, stdout, stderr
+
+    def _copy_benchpress_log(self, dcperf_root: Optional[str]) -> None:
+        """Preserve benchpress's own log (every line from process start, unlike
+        the WARNING-only console/tee capture) into the run directory.
+
+        tmc's target_output.txt and our workload.log only contain what
+        benchpress prints to stdout (WARNING+ and the final summary); the
+        full per-line output from the moment benchpress started -- including
+        everything before the ramp marker -- only ever lands in
+        <dcperf_root>/benchpress.log. Without this copy that full record is
+        lost (overwritten by the next run) and never reaches results/ or the
+        uploaded trace.
+        """
+        if not dcperf_root or self.run_dir is None or self.args.dry_run:
+            return
+        src = Path(dcperf_root) / "benchpress.log"
+        try:
+            shutil.copy2(src, self.run_dir / "benchpress.log")
+        except OSError as exc:
+            self.logger.warning("base_wrapper: could not copy %s into run_dir: %s", src, exc)
 
     def _reset_ramp_log(self, ramp_log: Optional[str]) -> None:
         """Truncate the ramp log so tmc cannot match a previous run's marker."""
