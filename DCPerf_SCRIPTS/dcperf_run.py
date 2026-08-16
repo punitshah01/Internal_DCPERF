@@ -509,8 +509,10 @@ def main() -> int:
         if do_install:
             ok = _install_workload(workload, wrapper_cls, config, logger, args.dry_run, args.resume, args.force)
             if not ok and not args.dry_run:
-                all_results.append({"workload": workload, "status": "FAIL", "runs": 0, "primary_kpi": "--"})
+                all_results.append({"workload": workload, "status": "FAIL", "runs": 0, "primary_kpi": "install failed"})
                 continue
+            if not do_run:
+                all_results.append({"workload": workload, "status": "PASS", "runs": 0, "primary_kpi": "installed"})
 
         if not do_run:
             continue
