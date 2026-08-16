@@ -277,12 +277,16 @@ class BaseWrapper(ABC):
             profile["views"] = ",".join(views)
 
         alias = self.args.tmc_alias or (
-            f"{self.get_workload_name()}_{datetime.now().strftime('%m%d%Y%H%M%S')}"
+            self.run_dir.name if self.run_dir is not None
+            else f"{self.get_workload_name()}_{datetime.now().strftime('%m%d%Y%H%M%S')}"
         )
         profile["alias"] = alias
         profile["upload"] = not self.args.no_upload
+        # -d/-D and -a must be bare names, not paths: DCSO Metrics derives the
+        # trace name (and its server-side storage path) from them, and an
+        # absolute path there makes the upload land somewhere unwritable.
         if self.run_dir is not None:
-            profile.setdefault("log_dir", str(self.run_dir))
+            profile.setdefault("log_dir", self.run_dir.name)
         # benchpress pins its console handler to WARNING, so the workload's
         # output only reaches stdout as a trimmed summary at exit. benchpress.log
         # gets every line live, so that is what tmc must watch for the ramp marker.
@@ -315,13 +319,17 @@ class BaseWrapper(ABC):
             ramp_log = profile.get("ramp_log")
             self._reset_ramp_log(ramp_log)
             inner = " ".join(shlex.quote(part) for part in cmd)
+            # tmc runs from the results directory so its -d/-D stay relative;
+            # benchpress still needs dcperf_root as its own working directory.
+            inner = f"cd {shlex.quote(str(dcperf_root))} && {inner}"
             # Keep a full copy of the run next to the results; ramp detection
             # itself reads benchpress.log (see _resolve_tmc_profile).
             if self.run_dir is not None:
                 workload_log = self.run_dir / "workload.log"
-                inner = f"stdbuf -oL -eL {inner} 2>&1 | stdbuf -oL tee {shlex.quote(str(workload_log))}"
+                inner = f"stdbuf -oL -eL bash -c {shlex.quote(inner)} 2>&1 | stdbuf -oL tee {shlex.quote(str(workload_log))}"
             tmc_cmd = self.tmc_runner.build_command(inner, **profile)
-            rc, stdout, stderr = self._run_streamed(tmc_cmd, cwd=dcperf_root)
+            tmc_cwd = str(self.run_dir.parent) if self.run_dir is not None else dcperf_root
+            rc, stdout, stderr = self._run_streamed(tmc_cmd, cwd=tmc_cwd)
             self._check_ramp_detection(stdout, profile)
             self._capture_tmc_result_dir(stdout)
             return rc, stdout, stderr
