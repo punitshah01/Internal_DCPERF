@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import shlex
 import signal
 import socket
 import subprocess
@@ -39,6 +40,7 @@ from modules.dcperf_logger import get_logger
 from modules.dcperf_os_tuner import apply_all as apply_all_os_tuning
 from modules.dcperf_perf_collector import PerfCollector
 from modules.dcperf_result_manager import ResultManager
+from modules.dcperf_tmc import TmcRunner
 
 # Module-level global so the signal handler can reach the running
 # benchpress subprocess regardless of which wrapper instance started it.
@@ -74,6 +76,7 @@ class BaseWrapper(ABC):
 
         self.emon_manager = EmonManager(self.config, self.logger, dry_run=self.args.dry_run)
         self.perf_collector = PerfCollector(self.config, self.logger, dry_run=self.args.dry_run)
+        self.tmc_runner = TmcRunner(self.config, self.logger, dry_run=self.args.dry_run)
 
         self.run_dir: Optional[Path] = None
         self._emon_process: Optional[subprocess.Popen] = None
@@ -125,6 +128,18 @@ class BaseWrapper(ABC):
         parser.add_argument("--runs", type=int, default=None, help="Number of runs (default from config)")
         parser.add_argument("--cores", type=int, default=None, help="Number of cores to enable before running")
         parser.add_argument("--force", "-f", action="store_true", help="Force reinstall (passed through to benchpress_cli.py install -f)")
+        tmc_group = parser.add_argument_group("TMC telemetry (EMON collection + upload)")
+        tmc_group.add_argument("--tmc", action="store_true", help="Run the workload under tmc instead of local emon")
+        tmc_group.add_argument("--no-upload", action="store_true", help="Run tmc without uploading (drops -u)")
+        tmc_group.add_argument("--emon-user", "-x", default=None, help="TMC upload user (default: emon_user from config)")
+        tmc_group.add_argument("--tmc-alias", "-a", default=None, help="TMC session alias (default: <workload>_<timestamp>)")
+        tmc_group.add_argument("--emon-start", "-S", type=int, default=None, help="EMON collection start offset in seconds")
+        tmc_group.add_argument("--emon-end", "-E", type=int, default=None, help="EMON collection end offset in seconds")
+        tmc_group.add_argument("--emon-views", "-w", default=None, help="TMC views, e.g. socket,core,uncore")
+        tmc_group.add_argument("--tmc-metrics", "-Z", default=None, help="TMC metrics set, e.g. metrics2")
+        tmc_group.add_argument("--tmc-group", "-G", default=None, help="TMC session group/prefix tag")
+        tmc_group.add_argument("--tmc-tools", "-T", default=None, help="TMC tools, e.g. emon,sar or emon,iostat")
+        tmc_group.add_argument("--ramp-timeout", "-rt", type=int, default=None, help="TMC ramp timeout in seconds")
         cls.add_arguments(parser)
         return parser
 
@@ -184,6 +199,9 @@ class BaseWrapper(ABC):
         return "Unknown"
 
     def setup_telemetry(self, emon_output_file: str) -> None:
+        # TMC starts and uploads its own EMON collection around the workload.
+        if self.args.tmc:
+            return
         if self.args.metric == "emon" or self.args.emon:
             self._emon_process = self.emon_manager.start_emon(emon_output_file)
 
@@ -225,6 +243,47 @@ class BaseWrapper(ABC):
         """
         return []
 
+    def get_tmc_profile(self) -> Dict[str, Any]:
+        """Per-workload TMC defaults, mirroring the baseline *_perf.sh scripts.
+
+        Subclasses override to supply ramp_string/ramp_log and the collection
+        window. CLI flags take precedence over anything returned here.
+        """
+        return {}
+
+    def _resolve_tmc_profile(self) -> Dict[str, Any]:
+        profile = dict(self.get_tmc_profile())
+        overrides = {
+            "ramp_timeout": self.args.ramp_timeout,
+            "start": self.args.emon_start,
+            "end": self.args.emon_end,
+            "views": self.args.emon_views,
+            "metrics_set": self.args.tmc_metrics,
+            "group": self.args.tmc_group,
+            "tools": self.args.tmc_tools,
+            "user": self.args.emon_user,
+        }
+        profile.update({key: value for key, value in overrides.items() if value is not None})
+
+        if not profile.get("views"):
+            views = [name for flag, name in (
+                (self.args.detailed_view, "thread"),
+                (True, "socket"),
+                (self.args.core_view, "core"),
+                (self.args.uncore_view, "uncore"),
+            ) if flag]
+            profile["views"] = ",".join(views)
+
+        alias = self.args.tmc_alias or (
+            f"{self.get_workload_name()}_{datetime.now().strftime('%m%d%Y%H%M%S')}"
+        )
+        profile["alias"] = alias
+        profile["upload"] = not self.args.no_upload
+        if self.run_dir is not None:
+            profile.setdefault("log_dir", str(self.run_dir))
+            profile.setdefault("ramp_log", str(self.run_dir / "stdout.log"))
+        return profile
+
     def run_benchpress(self, job: str, extra_args: List[str]) -> Tuple[int, str, str]:
         """Run `python <dcperf_root>/benchpress_cli.py [-b file] [-j file] run <job> <extra_args>`.
 
@@ -241,6 +300,12 @@ class BaseWrapper(ABC):
 
         cli = Path(dcperf_root) / "benchpress_cli.py"
         cmd = [sys.executable, str(cli)] + self.get_benchpress_global_args() + ["run", job] + extra_args
+
+        if self.args.tmc:
+            inner = " ".join(shlex.quote(part) for part in cmd)
+            profile = self._resolve_tmc_profile()
+            tmc_cmd = self.tmc_runner.build_command(inner, **profile)
+            return self.tmc_runner.run(tmc_cmd, cwd=dcperf_root)
 
         self.logger.info("base_wrapper: run_benchpress: %s", " ".join(cmd))
         if self.args.dry_run:

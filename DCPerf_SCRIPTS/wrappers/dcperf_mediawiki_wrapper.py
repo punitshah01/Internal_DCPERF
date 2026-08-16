@@ -261,6 +261,21 @@ class MediaWikiWrapper(BaseWrapper):
         online = len(get_online_cores())
         return max(1, (online + 99) // 100)
 
+    def get_tmc_profile(self) -> Dict[str, Any]:
+        """Mirrors mw_perf.sh's tmc invocation."""
+        duration = self.args.duration
+        return {
+            "ramp_string": "Starting wrk for benchmark",
+            "ramp_timeout": 2800,
+            "start": 600,
+            "end": (duration * 300) - 600,
+            "secondary_start": 10,
+            "secondary_end": (duration * 30) - 10,
+            "views": "socket,core,uncore",
+            "metrics_set": "metrics2",
+            "group": "mediawiki_1.3E",
+        }
+
     def get_job_vars(self) -> Dict[str, Any]:
         """Forward --clients/--duration to benchpress via -i JSON (scale_out/duration vars)."""
         job_vars: Dict[str, Any] = {"duration": f"{self.args.duration}m"}

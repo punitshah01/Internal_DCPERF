@@ -123,6 +123,19 @@ class VideoWrapper(BaseWrapper):
             ramp_log = str(self.run_dir / "stdout.log") if self.run_dir else "/tmp/vt_ramp.log"
             self.logger.info("video_wrapper: perf collection armed (ramp-gated, runs after workload starts)")
 
+    def get_tmc_profile(self) -> Dict[str, Any]:
+        """Mirrors vt_script.sh's tmc invocation."""
+        return {
+            "ramp_string": "start",
+            "ramp_log": "/tmp/ffmpeg_log.txt",
+            "ramp_timeout": 100,
+            "lead_time": 200,
+            "views": "thread,socket,core",
+            "tools": "emon,sar",
+            "group": "videotranscode_",
+            "verbose": True,
+        }
+
     def get_job_vars(self) -> Dict[str, Any]:
         """Forward --runtime to benchpress via -i JSON (runtime job var)."""
         return {"runtime": self.args.runtime}

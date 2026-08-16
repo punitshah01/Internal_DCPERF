@@ -183,6 +183,14 @@ class TaoBenchWrapper(BaseWrapper):
         )
         return self.JOB_NAME_AUTOSCALE
 
+    def get_tmc_profile(self) -> Dict[str, Any]:
+        """Mirrors tao_perf.sh's tmc invocation."""
+        return {
+            "ramp_string": "Starting Siege for benchmark",
+            "start": 1200,
+            "end": 4200,
+        }
+
     def get_job_vars(self) -> Dict[str, Any]:
         job_vars: Dict[str, Any] = {
             "memsize": str(self.args.memsize),

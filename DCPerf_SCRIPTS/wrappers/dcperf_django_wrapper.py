@@ -55,6 +55,17 @@ class DjangoWrapper(BaseWrapper):
             self.args.iterations, self.args.iterations * 5,
         )
 
+    def get_tmc_profile(self) -> Dict[str, Any]:
+        """Mirrors dj_perf.sh's tmc invocation."""
+        return {
+            "ramp_string": "Running iteration 1",
+            "ramp_timeout": 2400,
+            "end": 1700,
+            "views": "socket,core,uncore",
+            "metrics_set": "metrics2",
+            "group": "dj_core_scal",
+        }
+
     def get_job_vars(self) -> Dict[str, Any]:
         """Forward iterations/duration/db_addr to benchpress via -i JSON (jobs.yml vars).
 

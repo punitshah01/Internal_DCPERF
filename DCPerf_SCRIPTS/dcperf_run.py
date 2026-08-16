@@ -460,6 +460,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     parser.add_argument("--resume", action="store_true", help="Skip already-installed workloads")
     parser.add_argument("--emon", action="store_true", help="Enable EMON telemetry for all selected workloads")
+    parser.add_argument("--tmc", action="store_true", help="Collect and upload EMON via tmc for all selected workloads")
+    parser.add_argument("--no-upload", action="store_true", help="With --tmc, collect without uploading")
+    parser.add_argument("--emon-user", default=None, help="TMC upload user (default: emon_user from config)")
     parser.add_argument("--force", "-f", action="store_true", help="Force reinstall: remove from dcperf_install_state.txt and pass -f to benchpress_cli.py install")
     return parser
 
@@ -525,6 +528,12 @@ def main() -> int:
             extra_argv.append("--dry-run")
         if args.emon:
             extra_argv.append("--emon")
+        if args.tmc:
+            extra_argv.append("--tmc")
+        if args.no_upload:
+            extra_argv.append("--no-upload")
+        if args.emon_user:
+            extra_argv += ["--emon-user", args.emon_user]
 
         result = _run_workload(workload, wrapper_cls, extra_argv)
         all_results.append(result)

@@ -54,6 +54,15 @@ class SparkWrapper(BaseWrapper):
         if self.args.metric == "emon" and not self.config.get("emon_event_file"):
             self.config["emon_event_file"] = self.config_manager.require("emon_event_file")
 
+    def get_tmc_profile(self) -> Dict[str, Any]:
+        """Mirrors sweep.sh's tmc invocation."""
+        return {
+            "ramp_string": "TaskSchedulerImpl: Adding task set 2.0 with 200 tasks",
+            "views": "socket,core",
+            "tools": "emon,iostat",
+            "group": "spark_",
+        }
+
     def get_job_vars(self) -> Dict[str, Any]:
         """Forward --ipv4/--sanity/--local-hostname to benchpress via -i JSON."""
         job_vars: Dict[str, Any] = {}

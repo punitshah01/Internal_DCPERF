@@ -65,6 +65,15 @@ dnf config-manager --set-enabled crb
 - Override in `config/dcperf_config.yaml`: `sep_path`
 - PNPWLS provides the supported setup flow in `C:/repos/pnpwls/setup/setup_emon.sh`. Copy that script/repository to the SUT, set `emon_setup_script` if you want to track its location, and run it before enabling `--emon`. It installs SEP/pyedp and the telemetry client (`tmc`). After SEP is installed, ConfigManager automatically selects a platform-matching `*server*events*.txt` file from `/opt/intel/sep/config/edp`, falling back to the first private/server event file.
 
+**Two telemetry modes:**
+
+| Mode | Flag | Behaviour |
+| --- | --- | --- |
+| Local EMON | `--emon` | `emon -collect-edp` runs alongside the workload; raw `emon.dat` plus local EDP output stay in the run directory. Nothing is uploaded. |
+| TMC | `--tmc` | The workload runs *under* `tmc`, which handles ramp detection, the EMON collection window, and (unless `--no-upload`) uploads the session as `emon_user`. This reproduces the pre-automation `*_perf.sh` behaviour. |
+
+Each wrapper supplies its baseline TMC profile (ramp string, ramp log, `-S`/`-E` window, views, `-Z`/`-G`/`-T`) via `get_tmc_profile()`, taken from the corresponding `mw_perf.sh` / `dj_perf.sh` / `fs_perf.sh` / `sweep.sh` / `tao_perf.sh` / `vt_script.sh`. Any of it can be overridden on the CLI with `-S`, `-E`, `-w`, `-Z`, `-G`, `-T`, `-rt`, `-a`, `-x`.
+
 **Workload-specific prerequisites:**
 
 | Workload | Prerequisites |

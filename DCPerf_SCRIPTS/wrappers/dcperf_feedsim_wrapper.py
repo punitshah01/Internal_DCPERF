@@ -152,6 +152,18 @@ class FeedsimWrapper(BaseWrapper):
         """Apply the FeedSim OS tuning profile (tune_feedsim, routed by base_wrapper)."""
         return super().pre_run()
 
+    def get_tmc_profile(self) -> Dict[str, Any]:
+        """Mirrors fs_perf.sh's tmc invocation."""
+        return {
+            "ramp_string": "after warmup",
+            "ramp_log": "/tmp/feedsim_log.txt",
+            "ramp_timeout": 1000,
+            "start": 300,
+            "end": 900,
+            "views": "socket,core",
+            "metrics_set": "metrics2",
+        }
+
     def get_job_vars(self) -> Dict[str, Any]:
         """Forward --instances to benchpress via -i JSON (num_instances job var)."""
         return {"num_instances": self.args.instances}
