@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 
 _LOGGER_CONFIGURED_ATTR = "_dcperf_logger_configured"
 _LOG_FILE_ATTR = "dcperf_log_path"
+_SHARED_LOG_PATH: Path | None = None
 _RESET = "\033[0m"
 _YELLOW = "\033[33m"
 _RED = "\033[31m"
@@ -39,15 +40,23 @@ class _ConsoleFormatter(logging.Formatter):
 
 
 def get_logger(name: str, log_dir: Path) -> logging.Logger:
-    """Return an idempotently configured logger for a DCPerf component."""
+    """Return an idempotently configured logger for a DCPerf component.
+
+    All loggers in a process share one log file so master and wrapper output
+    stay in a single place.
+    """
+    global _SHARED_LOG_PATH
+
     logger = logging.getLogger(name)
     if getattr(logger, _LOGGER_CONFIGURED_ATTR, False):
         return logger
 
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = log_dir / f"dcperf_{timestamp}.log"
+    if _SHARED_LOG_PATH is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        _SHARED_LOG_PATH = log_dir / f"dcperf_{timestamp}.log"
+    log_path = _SHARED_LOG_PATH
 
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
