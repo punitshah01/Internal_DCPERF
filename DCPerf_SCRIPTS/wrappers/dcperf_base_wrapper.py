@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import re
 import shlex
 import signal
 import socket
@@ -83,6 +84,7 @@ class BaseWrapper(ABC):
         self._rows: List[Dict[str, Any]] = []
         self.cpu_monitor: Optional[CpuMonitor] = None
         self._cpu_monitor_result: Dict[str, Any] = {}
+        self._tmc_result_dir: str = ""
 
         _active_wrapper = self
 
@@ -299,7 +301,7 @@ class BaseWrapper(ABC):
             raise RuntimeError("dcperf_root is not configured; cannot locate benchpress_cli.py")
 
         cli = Path(dcperf_root) / "benchpress_cli.py"
-        cmd = [sys.executable, str(cli)] + self.get_benchpress_global_args() + ["run", job] + extra_args
+        cmd = [sys.executable, "-u", str(cli)] + self.get_benchpress_global_args() + ["run", job] + extra_args
 
         if self.args.tmc:
             if not self.args.dry_run and not self.tmc_runner.is_available():
@@ -307,18 +309,52 @@ class BaseWrapper(ABC):
             profile = self._resolve_tmc_profile()
             ramp_log = profile.get("ramp_log")
             inner = " ".join(shlex.quote(part) for part in cmd)
-            # tmc watches -rl for the ramp marker, so the inner command must
-            # tee into that file itself; tmc's own stdout never reaches it.
+            # tmc watches -rl for the ramp marker, so the inner command must tee
+            # into that file itself; stdbuf keeps the pipe line-buffered so the
+            # marker lands while the workload runs, not after it exits.
             if ramp_log:
-                inner = f"{inner} 2>&1 | tee {shlex.quote(str(ramp_log))}"
+                inner = f"stdbuf -oL -eL {inner} 2>&1 | stdbuf -oL tee {shlex.quote(str(ramp_log))}"
             tmc_cmd = self.tmc_runner.build_command(inner, **profile)
-            return self._run_streamed(tmc_cmd, cwd=dcperf_root)
+            rc, stdout, stderr = self._run_streamed(tmc_cmd, cwd=dcperf_root)
+            self._check_ramp_detection(stdout, profile)
+            self._capture_tmc_result_dir(stdout)
+            return rc, stdout, stderr
 
         self.logger.info("base_wrapper: run_benchpress: %s", " ".join(cmd))
         if self.args.dry_run:
             return 0, "[dry-run] benchpress not executed", ""
 
         return self._run_streamed(cmd, cwd=dcperf_root)
+
+    def _capture_tmc_result_dir(self, stdout: str) -> None:
+        """Record tmc's own output directory; it appends _1, _2... when -d exists."""
+        match = re.search(r"Results stored at (\S+)", stdout)
+        if not match:
+            return
+        self._tmc_result_dir = match.group(1)
+        if self.run_dir is not None and Path(self._tmc_result_dir).resolve() != self.run_dir.resolve():
+            self.logger.warning(
+                "base_wrapper: tmc stored its trace in %s, outside the run directory %s",
+                self._tmc_result_dir, self.run_dir,
+            )
+
+    def _check_ramp_detection(self, stdout: str, profile: Dict[str, Any]) -> None:
+        """Warn when tmc saw the ramp marker only at process exit.
+
+        tmc anchors the EMON window on the marker, so a late detection means
+        collection started after the workload finished and the trace is useless.
+        """
+        if "not find the requested string" in stdout or "Timed out" in stdout:
+            self.logger.error(
+                "base_wrapper: tmc never saw ramp marker %r -- EMON window did not "
+                "align with the workload",
+                profile.get("ramp_string"),
+            )
+        if "Target process already exited" in stdout:
+            self.logger.error(
+                "base_wrapper: tmc started EMON after the workload had already exited; "
+                "the ramp marker was detected too late and the trace is not usable"
+            )
 
     def _run_streamed(self, cmd: List[str], cwd: Optional[str] = None) -> Tuple[int, str, str]:
         """Run cmd, echoing output live while capturing it for KPI parsing."""
@@ -362,6 +398,25 @@ class BaseWrapper(ABC):
             self.emon_manager.stop_emon(self._emon_process)
             self._emon_process = None
 
+    def _utilization_is_acceptable(self) -> bool:
+        """Fail runs whose CPU utilization is far under the workload's target.
+
+        A benchmark that idles produces plausible-looking but meaningless KPIs,
+        so this is an error rather than the previous advisory warning.
+        """
+        avg = self._cpu_monitor_result.get("avg_overall_pct")
+        if avg is None:
+            return True
+        floor = float(self.config.get("min_cpu_utilization_pct", 50.0))
+        if avg >= floor:
+            return True
+        self.logger.error(
+            "base_wrapper: CPU utilization averaged %.1f%%, below the %.0f%% floor for %s; "
+            "the workload was not driven at load",
+            avg, floor, self.get_workload_name(),
+        )
+        return False
+
     @staticmethod
     def _kpis_are_meaningful(kpis: Dict[str, Any]) -> bool:
         """True if at least one KPI is non-zero; an all-zero set means no run happened."""
@@ -389,6 +444,11 @@ class BaseWrapper(ABC):
         print(f"{'Status'.ljust(28)}: {status}")
         print(f"{'Host'.ljust(28)}: {socket.gethostname()}")
         print(f"{'Telemetry'.ljust(28)}: {self._telemetry_mode()}")
+        avg_util = self._cpu_monitor_result.get("avg_overall_pct")
+        if avg_util is not None:
+            print(f"{'CPU utilization'.ljust(28)}: {avg_util}%")
+        if self._tmc_result_dir:
+            print(f"{'TMC trace directory'.ljust(28)}: {self._tmc_result_dir}")
         if kpis:
             print("-" * width)
             print(f"{'KPI'.ljust(28)}  Value")
@@ -528,6 +588,9 @@ class BaseWrapper(ABC):
             except Exception as exc:
                 self.logger.error("base_wrapper: post_run failed: %s", exc)
 
+            if status == "PASS" and not self.args.dry_run and not self._utilization_is_acceptable():
+                status = "FAIL"
+
             row = dict(metadata)
             row.update(kpis)
             row["status"] = status
@@ -541,7 +604,11 @@ class BaseWrapper(ABC):
 
             self.result_manager.write_json_results(
                 self.run_dir,
-                {"orch_run_id": self.args.orch_run_id, "rows": self._rows},
+                {
+                    "orch_run_id": self.args.orch_run_id,
+                    "tmc_result_dir": self._tmc_result_dir,
+                    "rows": self._rows,
+                },
             )
             metrics_payload = dict(kpis)
             if self._cpu_monitor_result:

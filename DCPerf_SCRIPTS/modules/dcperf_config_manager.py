@@ -9,7 +9,7 @@ the same question is never repeated.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 import platform
 
 import yaml
@@ -103,12 +103,48 @@ class ConfigManager:
 
         return self._config
 
+    # (vendor, family, model) -> event-file alias, keyed by CPUID rather than
+    # any OS/kernel string, which never carries the platform codename.
+    _CPU_MODEL_ALIASES = {
+        ("intel", 6, 143): "sapphirerapids",
+        ("intel", 6, 207): "emeraldrapids",
+        ("intel", 6, 173): "graniterapids",
+        ("intel", 6, 174): "graniterapids",
+        ("intel", 6, 175): "sierraforest",
+        ("intel", 6, 221): "sierraforest",
+        ("intel", 6, 204): "clearwaterforest",
+        ("intel", 19, 1): "diamondrapids",
+    }
+
+    @staticmethod
+    def _read_cpu_identity() -> Tuple[Optional[str], Optional[int], Optional[int]]:
+        """Return (vendor, cpu family, model) from /proc/cpuinfo."""
+        vendor = family = model = None
+        try:
+            with open("/proc/cpuinfo", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    key, _, value = line.partition(":")
+                    key = key.strip().lower()
+                    value = value.strip()
+                    if key == "vendor_id" and vendor is None:
+                        vendor = "intel" if "intel" in value.lower() else value.lower()
+                    elif key == "cpu family" and family is None:
+                        family = int(value)
+                    elif key == "model" and model is None:
+                        model = int(value)
+                    if vendor and family is not None and model is not None:
+                        break
+        except (OSError, ValueError):
+            return None, None, None
+        return vendor, family, model
+
     def _discover_emon_event_file(self, sep_path: Optional[str]) -> Optional[Path]:
-        """Find a platform event file using the installed SEP EDP directory.
+        """Find the SEP event file matching this CPU.
 
         PNPWLS setup_emon.sh installs SEP and pyedp but does not select a
-        platform event file. Prefer a platform-named private/server file,
-        then fall back to the first server event file shipped by SEP.
+        platform event file. Selection is driven by CPUID; a wrong file makes
+        EMON discard every event and fail PMU programming, so we return None
+        rather than guessing when the CPU is unrecognised.
         """
         if not sep_path:
             return None
@@ -116,25 +152,31 @@ class ConfigManager:
         if not edp_dir.exists():
             return None
 
-        platform_name = platform.platform().lower()
-        aliases = []
-        if "granite" in platform_name or "6700" in platform_name or "6900" in platform_name:
-            aliases.append("graniterapids")
-        if "sapphire" in platform_name or "8470" in platform_name:
-            aliases.append("sapphirerapids")
-        if "emerald" in platform_name or "8570" in platform_name:
-            aliases.append("emeraldrapids")
-        if "diamond" in platform_name:
-            aliases.append("diamondrapids")
+        vendor, family, model = self._read_cpu_identity()
+        if vendor is None:
+            self.logger.warning("config_manager: cannot read CPU identity, skipping event-file detection")
+            return None
+
+        alias = self._CPU_MODEL_ALIASES.get((vendor, family, model))
+        if alias is None:
+            self.logger.warning(
+                "config_manager: unrecognised CPU (vendor=%s family=%s model=%s); "
+                "set emon_event_file manually in dcperf_config.yaml",
+                vendor, family, model,
+            )
+            return None
 
         candidates = sorted(edp_dir.glob("*server*events*.txt"))
-        for alias in aliases:
-            matching = [path for path in candidates if alias in path.name.lower()]
-            if matching:
-                private = [path for path in matching if "private" in path.name.lower()]
-                return private[0] if private else matching[0]
-        private = [path for path in candidates if "private" in path.name.lower()]
-        return private[0] if private else (candidates[0] if candidates else None)
+        matching = [path for path in candidates if alias in path.name.lower().replace("_", "")]
+        if not matching:
+            self.logger.warning(
+                "config_manager: no %s event file under %s; set emon_event_file manually",
+                alias, edp_dir,
+            )
+            return None
+
+        private = [path for path in matching if "private" in path.name.lower()]
+        return private[0] if private else matching[0]
 
     def _auto_detect_dcperf_root(self) -> Optional[Path]:
         """Walk up from this file's location until benchpress/config/benchmarks.yml is found."""

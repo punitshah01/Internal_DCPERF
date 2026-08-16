@@ -255,23 +255,33 @@ class MediaWikiWrapper(BaseWrapper):
             return False
 
     def _resolve_clients(self) -> int:
+        """Effective wrk client thread count; 0 means run.sh's own default (2 * nproc)."""
         if self.args.clients:
             return self.args.clients
-        # Bug fix: derive instance count from currently *enabled* cores,
-        # not the OS-reported total logical CPU count (nproc).
+        return 2 * len(get_online_cores())
+
+    def _resolve_instances(self) -> int:
+        """Effective HHVM instance count; 0 means run.sh's own default."""
+        if self.args.instances:
+            return self.args.instances
         online = len(get_online_cores())
         return max(1, (online + 99) // 100)
 
     def get_tmc_profile(self) -> Dict[str, Any]:
-        """Mirrors mw_perf.sh's tmc invocation."""
-        duration = self.args.duration
+        """Mirrors mw_perf.sh's tmc invocation.
+
+        The window is relative to ramp detection, so it is sized from the
+        benchmark duration rather than mw_perf.sh's fixed 600/2400, which
+        assumed tmc launched run.sh directly with no benchpress phase ahead.
+        """
+        duration_sec = self.args.duration * 60
         return {
             "ramp_string": "Starting wrk for benchmark",
             "ramp_timeout": 2800,
-            "start": 600,
-            "end": (duration * 300) - 600,
+            "start": 60,
+            "end": max(120, duration_sec - 60),
             "secondary_start": 10,
-            "secondary_end": (duration * 30) - 10,
+            "secondary_end": max(30, (duration_sec // 10) - 10),
             "views": "socket,core,uncore",
             "metrics_set": "metrics2",
             "group": "mediawiki_1.3E",
@@ -280,13 +290,17 @@ class MediaWikiWrapper(BaseWrapper):
     def get_job_vars(self) -> Dict[str, Any]:
         """Forward --clients/--instances/--duration to benchpress via -i JSON.
 
-        jobs.yml renders these as `-c{client_threads}` and `-R{scale_out}`.
+        jobs.yml renders these as `-c{client_threads}` and `-R{scale_out}`, where
+        0 tells run.sh to use its own defaults (2 * nproc threads,
+        ceil(nproc / 100) HHVM instances). Only override when asked -- computing
+        our own values here silently under-loads the benchmark.
         """
         job_vars: Dict[str, Any] = {
-            "client_threads": self._resolve_clients(),
             "duration": f"{self.args.duration}m",
             "timeout": f"{self.args.duration + 1}m",
         }
+        if self.args.clients:
+            job_vars["client_threads"] = self.args.clients
         if self.args.instances:
             job_vars["scale_out"] = self.args.instances
         return job_vars
@@ -294,14 +308,17 @@ class MediaWikiWrapper(BaseWrapper):
     def parse_output(self, stdout: str) -> Dict[str, Any]:
         parsed: Dict[str, Any] = {}
         bp = self.parse_benchpress_json(stdout)
-        combined = bp.get("metrics", {}).get("Combined", {})
+        metrics = bp.get("metrics", {})
+        combined = metrics.get("Combined", {})
         if combined:
             if "Wrk RPS" in combined:
                 parsed["requests_per_sec"] = float(combined["Wrk RPS"])
             if "Nginx P99 time" in combined:
                 parsed["p99_latency_ms"] = float(combined["Nginx P99 time"]) * 1000.0
-            if "score" in bp:
-                parsed["score"] = float(bp["score"])
+            # benchpress nests score under metrics, not at the top level.
+            score = metrics.get("score", bp.get("score"))
+            if score is not None:
+                parsed["score"] = float(score)
             return parsed
 
         match = re.search(r"Requests/sec:\s*([\d.]+)", stdout)
@@ -339,7 +356,6 @@ class MediaWikiWrapper(BaseWrapper):
 
 def main() -> int:
     wrapper = MediaWikiWrapper()
-    wrapper.args.clients = wrapper._resolve_clients() if wrapper.args.clients == 0 else wrapper.args.clients
     if getattr(wrapper.args, "core_scaling", False):
         return wrapper.run_core_scaling()
     return wrapper.run()

@@ -164,6 +164,40 @@ def install_os_prerequisites(logger, dry_run: bool, resume: bool) -> bool:
     return ok
 
 
+def _install_known_hosts(config: Dict[str, Any], logger, dry_run: bool) -> bool:
+    """Append the DCSO Metrics host keys so tmc uploads do not prompt/fail."""
+    known_hosts = Path.home() / ".ssh" / "known_hosts"
+    url = config.get(
+        "known_hosts_url",
+        "https://af01p-or.devtools.intel.com/artifactory/"
+        "dpgpaivsoworkloads-or-local/base/workloads/dcperf/known_hosts",
+    )
+    hosts = ("dcsometrics.intel.com", "dcsometrics2.intel.com")
+    if known_hosts.exists():
+        existing = known_hosts.read_text(encoding="utf-8", errors="ignore")
+        if all(host in existing for host in hosts):
+            return True
+
+    logger.info("master_setup: fetching DCSO Metrics host keys from %s", url)
+    if dry_run:
+        return True
+
+    try:
+        known_hosts.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["wget", "-q", url, "-O", "-"], capture_output=True, text=True, check=True, timeout=60,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        logger.warning("master_setup: could not fetch known_hosts (%s); tmc upload may warn", exc)
+        return False
+
+    with open(known_hosts, "a", encoding="utf-8") as fh:
+        fh.write(result.stdout if result.stdout.endswith("\n") else result.stdout + "\n")
+    known_hosts.chmod(0o600)
+    logger.info("master_setup: appended DCSO Metrics host keys to %s", known_hosts)
+    return True
+
+
 def _check_benchmark_installer(dcperf_root: str, workload: str, logger) -> bool:
     """Fail early when the DCPerf checkout lacks the installer referenced by benchmarks.yml."""
     benchmark_file = Path(dcperf_root) / "benchpress" / "config" / "benchmarks.yml"
@@ -492,6 +526,9 @@ def main() -> int:
 
     do_install = args.all or args.install_only
     do_run = args.all or args.run_only or (not args.install_only)
+
+    if args.tmc:
+        _install_known_hosts(config, logger, args.dry_run)
 
     if do_install:
         if not install_os_prerequisites(logger, args.dry_run, args.resume):
