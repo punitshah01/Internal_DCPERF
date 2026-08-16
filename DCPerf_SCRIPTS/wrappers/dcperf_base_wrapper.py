@@ -39,6 +39,8 @@ from modules.dcperf_cpu_monitor import CpuMonitor
 from modules.dcperf_emon_manager import EmonManager
 from modules.dcperf_logger import get_logger
 from modules.dcperf_os_tuner import apply_all as apply_all_os_tuning
+from modules.dcperf_os_tuner import capture_baseline as capture_os_tuning_baseline
+from modules.dcperf_os_tuner import restore_baseline as restore_os_tuning_baseline
 from modules.dcperf_perf_collector import PerfCollector
 from modules.dcperf_result_manager import ResultManager
 from modules.dcperf_tmc import TmcRunner
@@ -85,6 +87,7 @@ class BaseWrapper(ABC):
         self.cpu_monitor: Optional[CpuMonitor] = None
         self._cpu_monitor_result: Dict[str, Any] = {}
         self._tmc_result_dir: str = ""
+        self._os_tuning_baseline: Optional[Dict[str, Optional[str]]] = None
 
         _active_wrapper = self
 
@@ -214,6 +217,7 @@ class BaseWrapper(ABC):
         checks, dataset prep) should override pre_run(), do their own work,
         then call super().pre_run() to still get tuning applied/recorded.
         """
+        self._os_tuning_baseline = capture_os_tuning_baseline(self.get_workload_name(), self.logger)
         tuning_results = apply_all_os_tuning(self.get_workload_name(), self.config, self.logger, self.args.dry_run)
         if self.run_dir is not None:
             self.result_manager.save_metrics(self.run_dir, {"os_tuning": tuning_results})
@@ -225,11 +229,19 @@ class BaseWrapper(ABC):
         return tuning_results
 
     def post_run(self) -> None:
-        """Hook for post-run cleanup. Stops the CPU monitor before result writing.
+        """Hook for post-run cleanup. Restores pre-tuning OS settings, then stops
+        the CPU monitor, before result writing.
 
         Subclasses that override this (e.g. Spark's post-run cache cleanup)
-        must call super().post_run() to still get the CPU monitor stopped.
+        must call super().post_run() to still get tuning restored and the CPU
+        monitor stopped.
         """
+        if self._os_tuning_baseline is not None:
+            restore_results = restore_os_tuning_baseline(self._os_tuning_baseline, self.logger, self.args.dry_run)
+            if self.run_dir is not None:
+                self.result_manager.save_metrics(self.run_dir, {"os_tuning_restore": restore_results})
+            self._os_tuning_baseline = None
+
         if self.cpu_monitor is not None:
             self._cpu_monitor_result = self.cpu_monitor.stop()
             self.cpu_monitor = None
@@ -549,6 +561,13 @@ class BaseWrapper(ABC):
                 except Exception:
                     pass
             _current_proc = None
+
+        if self._os_tuning_baseline is not None:
+            try:
+                restore_os_tuning_baseline(self._os_tuning_baseline, self.logger, self.args.dry_run)
+            except Exception:
+                pass
+            self._os_tuning_baseline = None
 
         if self.run_dir is not None:
             try:

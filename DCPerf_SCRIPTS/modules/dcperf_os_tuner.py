@@ -9,9 +9,10 @@ parameters come in as arguments.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def _write_sysctl(path: str, value: str, logger, dry_run: bool) -> bool:
@@ -315,6 +316,91 @@ _WORKLOAD_TUNING_ROUTES = {
     "django_workload": tune_django,
 }
 _NO_TUNING_WORKLOADS = {"health_check", "wdl_bench"}
+
+
+# ---------------------------------------------------------------------------
+# Baseline capture/restore so one workload's tuning never leaks into the next
+# ---------------------------------------------------------------------------
+
+# Sentinel key for the THP mode (not a dotted sysctl name, handled separately).
+_THP_KEY = "__thp__"
+
+# Persistent (non one-shot) settings touched per workload profile. drop_caches,
+# compact_memory, clear_tmp and ulimit are intentionally excluded: they are
+# one-shot actions / process-local and there is nothing meaningful to restore.
+_RESTORABLE_SETTINGS: Dict[str, List[str]] = {
+    "tao_bench": [
+        "net.core.netdev_max_backlog",
+        "net.core.somaxconn",
+        "net.ipv4.tcp_max_syn_backlog",
+        "net.ipv4.ip_local_port_range",
+        "net.ipv4.tcp_tw_reuse",
+        "kernel.nmi_watchdog",
+        "net.core.rmem_max",
+        "net.core.wmem_max",
+        "net.ipv4.tcp_rmem",
+        "net.ipv4.tcp_wmem",
+        "net.ipv4.tcp_syncookies",
+        "net.ipv4.tcp_abort_on_overflow",
+    ],
+    "feedsim": ["net.ipv4.tcp_tw_reuse", _THP_KEY],
+    "spark_standalone": [],
+    "video_transcode_bench": [_THP_KEY],
+    "django_workload": ["net.ipv4.tcp_tw_reuse", _THP_KEY],
+    # generic fallback profile used by mediawiki and unrecognized workloads
+    "mediawiki": ["net.ipv4.tcp_tw_reuse", _THP_KEY],
+}
+_RESTORABLE_SETTINGS["tao_bench_standalone"] = _RESTORABLE_SETTINGS["tao_bench"]
+
+
+def _sysctl_key_to_proc_path(key: str) -> str:
+    return "/proc/sys/" + key.replace(".", "/")
+
+
+def _read_value(path: str, logger) -> Optional[str]:
+    try:
+        return Path(path).read_text().strip()
+    except OSError as exc:
+        logger.warning("os_tuner: could not read current value of %s for baseline: %s", path, exc)
+        return None
+
+
+def _read_thp_mode(logger) -> Optional[str]:
+    raw = _read_value("/sys/kernel/mm/transparent_hugepage/enabled", logger)
+    if raw is None:
+        return None
+    match = re.search(r"\[(\w+)\]", raw)
+    return match.group(1) if match else None
+
+
+def capture_baseline(workload: str, logger) -> Dict[str, Optional[str]]:
+    """Snapshot the current value of every setting a workload's tuning profile
+    will touch, before apply_all() changes anything. Pass the result to
+    restore_baseline() after the run to put the host back the way it was.
+    """
+    if workload in _NO_TUNING_WORKLOADS:
+        return {}
+    keys = _RESTORABLE_SETTINGS.get(workload, _RESTORABLE_SETTINGS["mediawiki"])
+    baseline: Dict[str, Optional[str]] = {}
+    for key in keys:
+        baseline[key] = _read_thp_mode(logger) if key == _THP_KEY else _read_value(_sysctl_key_to_proc_path(key), logger)
+    logger.info("os_tuner: captured pre-tuning baseline for %r: %s", workload, baseline)
+    return baseline
+
+
+def restore_baseline(baseline: Dict[str, Optional[str]], logger, dry_run: bool = False) -> Dict[str, str]:
+    """Write back the values captured by capture_baseline(), reverting tuning
+    applied by apply_all() so it doesn't persist into the next run/workload.
+    """
+    results: Dict[str, str] = {}
+    for key, value in baseline.items():
+        if value is None:
+            logger.warning("os_tuner: no baseline value captured for %s, skipping restore", key)
+            results[key] = "SKIPPED"
+            continue
+        ok = set_thp(value, logger, dry_run) if key == _THP_KEY else _sysctl_w(key, value, logger, dry_run)
+        results[key] = "PASS" if ok else "FAIL"
+    return results
 
 
 def apply_all(workload: str, config: Dict[str, Any], logger, dry_run: bool = False) -> Dict[str, Any]:
