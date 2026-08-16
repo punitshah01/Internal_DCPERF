@@ -56,7 +56,8 @@ class MediaWikiWrapper(BaseWrapper):
 
     @classmethod
     def add_arguments(cls, parser) -> None:
-        parser.add_argument("--clients", type=int, default=0, help="wrk client count (0 = auto from enabled cores)")
+        parser.add_argument("--clients", type=int, default=0, help="wrk client count (-c, 0 = auto from enabled cores)")
+        parser.add_argument("--instances", type=int, default=0, help="HHVM/nginx instance count (-R scale_out)")
         parser.add_argument("--duration", type=int, default=10, help="Duration in minutes")
         parser.add_argument("--type", choices=["local", "remote"], default="local")
         parser.add_argument("--core-scaling", action="store_true", help="Run a core-scaling sweep")
@@ -277,10 +278,17 @@ class MediaWikiWrapper(BaseWrapper):
         }
 
     def get_job_vars(self) -> Dict[str, Any]:
-        """Forward --clients/--duration to benchpress via -i JSON (scale_out/duration vars)."""
-        job_vars: Dict[str, Any] = {"duration": f"{self.args.duration}m"}
-        if self.args.clients:
-            job_vars["scale_out"] = self.args.clients
+        """Forward --clients/--instances/--duration to benchpress via -i JSON.
+
+        jobs.yml renders these as `-c{client_threads}` and `-R{scale_out}`.
+        """
+        job_vars: Dict[str, Any] = {
+            "client_threads": self._resolve_clients(),
+            "duration": f"{self.args.duration}m",
+            "timeout": f"{self.args.duration + 1}m",
+        }
+        if self.args.instances:
+            job_vars["scale_out"] = self.args.instances
         return job_vars
 
     def parse_output(self, stdout: str) -> Dict[str, Any]:
