@@ -53,7 +53,8 @@ def get_logger(name: str, log_dir: Path) -> logging.Logger:
 
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
-    if _SHARED_LOG_PATH is None:
+    first_logger = _SHARED_LOG_PATH is None
+    if first_logger:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         _SHARED_LOG_PATH = log_dir / f"dcperf_{timestamp}.log"
     log_path = _SHARED_LOG_PATH
@@ -79,7 +80,8 @@ def get_logger(name: str, log_dir: Path) -> logging.Logger:
     setattr(logger, _LOGGER_CONFIGURED_ATTR, True)
     setattr(logger, _LOG_FILE_ATTR, log_path)
 
-    logger.info("Log file: %s", log_path)
+    if first_logger:
+        logger.info("Log file: %s", log_path)
     return logger
 
 

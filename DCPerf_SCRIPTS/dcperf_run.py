@@ -237,11 +237,14 @@ def _check_sep_available(config: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def _check_internet() -> Tuple[str, str]:
-    try:
-        with socket.create_connection(("github.com", 443), timeout=5):
-            return "PASS", ""
-    except OSError as exc:
-        return "WARN", str(exc)
+    # Artifactory hosts the workload payloads; github.com is no longer a dependency.
+    for host in ("af01p-or.devtools.intel.com", "github.com"):
+        try:
+            with socket.create_connection((host, 443), timeout=5):
+                return "PASS", host
+        except OSError as exc:
+            last = f"{host}:443 unreachable ({exc})"
+    return "WARN", last
 
 
 def _check_free_disk(config: Dict[str, Any]) -> Tuple[str, str]:
