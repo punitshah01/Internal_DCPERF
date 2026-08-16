@@ -80,12 +80,22 @@ class ConfigManager:
             self.logger.info("config_manager: defaulted emon_user=pshah")
             derived_changed = True
 
-        if not self._config.get("emon_event_file"):
-            event_file = self._discover_emon_event_file(self._config.get("sep_path"))
-            if event_file:
-                self._config["emon_event_file"] = str(event_file)
-                self.logger.info("config_manager: auto-detected emon_event_file=%s", event_file)
-                derived_changed = True
+        event_file = self._config.get("emon_event_file")
+        detected = self._discover_emon_event_file(self._config.get("sep_path"))
+        if detected and not event_file:
+            self._config["emon_event_file"] = str(detected)
+            self.logger.info("config_manager: auto-detected emon_event_file=%s", detected)
+            derived_changed = True
+        elif detected and Path(event_file).name != Path(detected).name:
+            # A mismatched event file makes EMON discard every event and abort,
+            # so a stale value from an earlier detection must not survive.
+            self.logger.warning(
+                "config_manager: configured emon_event_file=%s does not match this CPU; "
+                "replacing with %s",
+                event_file, detected,
+            )
+            self._config["emon_event_file"] = str(detected)
+            derived_changed = True
 
         if not self._config.get("video_dataset_path") and self._config.get("dcperf_root"):
             self._config["video_dataset_path"] = str(

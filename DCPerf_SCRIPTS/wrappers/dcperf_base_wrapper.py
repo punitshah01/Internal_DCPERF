@@ -283,7 +283,12 @@ class BaseWrapper(ABC):
         profile["upload"] = not self.args.no_upload
         if self.run_dir is not None:
             profile.setdefault("log_dir", str(self.run_dir))
-            profile.setdefault("ramp_log", str(self.run_dir / "workload.log"))
+        # benchpress pins its console handler to WARNING, so the workload's
+        # output only reaches stdout as a trimmed summary at exit. benchpress.log
+        # gets every line live, so that is what tmc must watch for the ramp marker.
+        dcperf_root = self.config.get("dcperf_root")
+        if dcperf_root and "ramp_log" not in profile:
+            profile["ramp_log"] = str(Path(dcperf_root) / "benchpress.log")
         return profile
 
     def run_benchpress(self, job: str, extra_args: List[str]) -> Tuple[int, str, str]:
@@ -308,12 +313,13 @@ class BaseWrapper(ABC):
                 return 1, "", "tmc not found on PATH"
             profile = self._resolve_tmc_profile()
             ramp_log = profile.get("ramp_log")
+            self._reset_ramp_log(ramp_log)
             inner = " ".join(shlex.quote(part) for part in cmd)
-            # tmc watches -rl for the ramp marker, so the inner command must tee
-            # into that file itself; stdbuf keeps the pipe line-buffered so the
-            # marker lands while the workload runs, not after it exits.
-            if ramp_log:
-                inner = f"stdbuf -oL -eL {inner} 2>&1 | stdbuf -oL tee {shlex.quote(str(ramp_log))}"
+            # Keep a full copy of the run next to the results; ramp detection
+            # itself reads benchpress.log (see _resolve_tmc_profile).
+            if self.run_dir is not None:
+                workload_log = self.run_dir / "workload.log"
+                inner = f"stdbuf -oL -eL {inner} 2>&1 | stdbuf -oL tee {shlex.quote(str(workload_log))}"
             tmc_cmd = self.tmc_runner.build_command(inner, **profile)
             rc, stdout, stderr = self._run_streamed(tmc_cmd, cwd=dcperf_root)
             self._check_ramp_detection(stdout, profile)
@@ -325,6 +331,18 @@ class BaseWrapper(ABC):
             return 0, "[dry-run] benchpress not executed", ""
 
         return self._run_streamed(cmd, cwd=dcperf_root)
+
+    def _reset_ramp_log(self, ramp_log: Optional[str]) -> None:
+        """Truncate the ramp log so tmc cannot match a previous run's marker."""
+        if not ramp_log or self.args.dry_run:
+            return
+        try:
+            path = Path(ramp_log)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+            self.logger.info("base_wrapper: truncated ramp log %s", path)
+        except OSError as exc:
+            self.logger.warning("base_wrapper: could not truncate ramp log %s: %s", ramp_log, exc)
 
     def _capture_tmc_result_dir(self, stdout: str) -> None:
         """Record tmc's own output directory; it appends _1, _2... when -d exists."""
