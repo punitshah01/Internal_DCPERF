@@ -125,17 +125,20 @@ class TaoBenchWrapper(BaseWrapper):
         return ok
 
     def _ensure_zlib_download(self) -> bool:
+        """Pre-seed folly's download cache; getdeps' upstream URL 404s because
+        zlib.net moves non-current releases to /fossils/."""
         dcperf_root = self.config.get("dcperf_root")
         if not dcperf_root:
             self.logger.warning("tao_bench_wrapper: dcperf_root not configured, skipping zlib pre-seed")
             return True
 
         downloads_dir = Path(dcperf_root) / "benchmarks" / "tao_bench" / "build-folly" / "downloads"
-        if not downloads_dir.exists():
-            self.logger.info(
-                "tao_bench_wrapper: Folly build dir not yet created, zlib will be downloaded during install"
-            )
-            return True
+        if not downloads_dir.exists() and not self.args.dry_run:
+            try:
+                downloads_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self.logger.error("tao_bench_wrapper: cannot create %s: %s", downloads_dir, exc)
+                return False
 
         archive = downloads_dir / _ZLIB_ARCHIVE_NAME
         if archive.exists() and archive.stat().st_size > 0:
