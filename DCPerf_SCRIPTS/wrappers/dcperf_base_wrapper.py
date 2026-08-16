@@ -282,11 +282,10 @@ class BaseWrapper(ABC):
         )
         profile["alias"] = alias
         profile["upload"] = not self.args.no_upload
-        # -d/-D and -a must be bare names, not paths: DCSO Metrics derives the
-        # trace name (and its server-side storage path) from them, and an
-        # absolute path there makes the upload land somewhere unwritable.
-        if self.run_dir is not None:
-            profile.setdefault("log_dir", self.run_dir.name)
+        # -a must be a bare name: DCSO Metrics derives the trace name and its
+        # server-side storage path from it. -d/-D are deliberately not set by
+        # default -- tmc would then create <log_dir>/<alias> and the trace name
+        # ends up duplicated. Only profiles that need them (spark) set log_dir.
         # benchpress pins its console handler to WARNING, so the workload's
         # output only reaches stdout as a trimmed summary at exit. benchpress.log
         # gets every line live, so that is what tmc must watch for the ramp marker.
@@ -328,7 +327,7 @@ class BaseWrapper(ABC):
                 workload_log = self.run_dir / "workload.log"
                 inner = f"stdbuf -oL -eL bash -c {shlex.quote(inner)} 2>&1 | stdbuf -oL tee {shlex.quote(str(workload_log))}"
             tmc_cmd = self.tmc_runner.build_command(inner, **profile)
-            tmc_cwd = str(self.run_dir.parent) if self.run_dir is not None else dcperf_root
+            tmc_cwd = str(self.run_dir) if self.run_dir is not None else dcperf_root
             rc, stdout, stderr = self._run_streamed(tmc_cmd, cwd=tmc_cwd)
             self._check_ramp_detection(stdout, profile)
             self._capture_tmc_result_dir(stdout)
@@ -357,8 +356,12 @@ class BaseWrapper(ABC):
         match = re.search(r"Results stored at (\S+)", stdout)
         if not match:
             return
-        self._tmc_result_dir = match.group(1)
-        if self.run_dir is not None and Path(self._tmc_result_dir).resolve() != self.run_dir.resolve():
+        reported = Path(match.group(1))
+        # tmc prints the path relative to its own working directory (run_dir).
+        if not reported.is_absolute() and self.run_dir is not None:
+            reported = self.run_dir / reported
+        self._tmc_result_dir = str(reported)
+        if self.run_dir is not None and self.run_dir not in reported.parents:
             self.logger.warning(
                 "base_wrapper: tmc stored its trace in %s, outside the run directory %s",
                 self._tmc_result_dir, self.run_dir,
