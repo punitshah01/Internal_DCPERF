@@ -184,11 +184,27 @@ class TaoBenchWrapper(BaseWrapper):
         return self.JOB_NAME_AUTOSCALE
 
     def get_tmc_profile(self) -> Dict[str, Any]:
-        """Mirrors tao_perf.sh's tmc invocation."""
+        """TaoBench standalone (run_standalone.py) blocks on
+        subprocess.communicate() for the whole warmup+test client run, so
+        nothing ever streams live into benchpress.log -- "Starting Siege for
+        benchmark" is actually MediaWiki's oss-performance ramp string
+        (packages/mediawiki/0001-oss-performance-scalable-hhvm.diff) and
+        tao_bench never prints it, so ramp-string detection (-rs/-rl) never
+        matches and EMON never collects during a real run.
+
+        Use tmc's lead-time (-lt) instead: it starts EMON a fixed number of
+        seconds after launching the command, with no log string required.
+        Wait out the warmup period (args_utils.get_warmup_time's formula:
+        max(5s/GB memsize, 1200s floor)) so collection only spans the actual
+        measured test_time window, sized to the real --test-time value
+        instead of a hardcoded 4200s.
+        """
+        warmup_time = max(5 * self.args.memsize, 1200)
         return {
-            "ramp_string": "Starting Siege for benchmark",
-            "start": 1200,
-            "end": 4200,
+            "ramp_log": None,
+            "lead_time": warmup_time,
+            "start": 0,
+            "end": self.args.test_time + 60,
         }
 
     def get_job_vars(self) -> Dict[str, Any]:
