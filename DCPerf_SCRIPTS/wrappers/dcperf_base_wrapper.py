@@ -281,7 +281,7 @@ class BaseWrapper(ABC):
         profile["upload"] = not self.args.no_upload
         if self.run_dir is not None:
             profile.setdefault("log_dir", str(self.run_dir))
-            profile.setdefault("ramp_log", str(self.run_dir / "stdout.log"))
+            profile.setdefault("ramp_log", str(self.run_dir / "workload.log"))
         return profile
 
     def run_benchpress(self, job: str, extra_args: List[str]) -> Tuple[int, str, str]:
@@ -302,48 +302,111 @@ class BaseWrapper(ABC):
         cmd = [sys.executable, str(cli)] + self.get_benchpress_global_args() + ["run", job] + extra_args
 
         if self.args.tmc:
-            inner = " ".join(shlex.quote(part) for part in cmd)
+            if not self.args.dry_run and not self.tmc_runner.is_available():
+                return 1, "", "tmc not found on PATH"
             profile = self._resolve_tmc_profile()
+            ramp_log = profile.get("ramp_log")
+            inner = " ".join(shlex.quote(part) for part in cmd)
+            # tmc watches -rl for the ramp marker, so the inner command must
+            # tee into that file itself; tmc's own stdout never reaches it.
+            if ramp_log:
+                inner = f"{inner} 2>&1 | tee {shlex.quote(str(ramp_log))}"
             tmc_cmd = self.tmc_runner.build_command(inner, **profile)
-            return self.tmc_runner.run(tmc_cmd, cwd=dcperf_root)
+            return self._run_streamed(tmc_cmd, cwd=dcperf_root)
 
         self.logger.info("base_wrapper: run_benchpress: %s", " ".join(cmd))
         if self.args.dry_run:
             return 0, "[dry-run] benchpress not executed", ""
 
+        return self._run_streamed(cmd, cwd=dcperf_root)
+
+    def _run_streamed(self, cmd: List[str], cwd: Optional[str] = None) -> Tuple[int, str, str]:
+        """Run cmd, echoing output live while capturing it for KPI parsing."""
+        global _current_proc
+
+        printable = " ".join(shlex.quote(part) for part in cmd)
+        self.logger.info("base_wrapper: exec: %s", printable)
+        if self.args.dry_run:
+            return 0, "[dry-run] not executed", ""
+
         try:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
                 start_new_session=True,
-                cwd=dcperf_root,
+                cwd=cwd,
             )
         except OSError as exc:
-            self.logger.error("base_wrapper: failed to launch benchpress: %s", exc)
+            self.logger.error("base_wrapper: failed to launch %s: %s", cmd[0], exc)
             return 1, "", str(exc)
 
         _current_proc = proc
+        captured: List[str] = []
         try:
-            stdout, stderr = proc.communicate()
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                captured.append(line)
+            proc.wait()
         finally:
             _current_proc = None
 
-        return proc.returncode, stdout, stderr
+        return proc.returncode, "".join(captured), ""
 
     def stop_telemetry(self) -> None:
         if self._emon_process is not None:
             self.emon_manager.stop_emon(self._emon_process)
             self._emon_process = None
 
+    @staticmethod
+    def _kpis_are_meaningful(kpis: Dict[str, Any]) -> bool:
+        """True if at least one KPI is non-zero; an all-zero set means no run happened."""
+        if not kpis:
+            return False
+        for value in kpis.values():
+            try:
+                if float(value) != 0.0:
+                    return True
+            except (TypeError, ValueError):
+                if value:
+                    return True
+        return False
+
     def print_summary(self, status: str, kpis: Dict[str, Any]) -> None:
         self.logger.info(
             "base_wrapper: %s finished status=%s kpis=%s",
             self.get_workload_name(), status, kpis,
         )
+
+        width = 64
+        print("=" * width)
+        print(f"{self.get_workload_name()} Run Summary")
+        print("=" * width)
+        print(f"{'Status'.ljust(28)}: {status}")
+        print(f"{'Host'.ljust(28)}: {socket.gethostname()}")
+        print(f"{'Telemetry'.ljust(28)}: {self._telemetry_mode()}")
+        if kpis:
+            print("-" * width)
+            print(f"{'KPI'.ljust(28)}  Value")
+            print("-" * width)
+            for name, value in kpis.items():
+                print(f"{name.ljust(28)}: {value}")
+        print("=" * width)
+        if status != "PASS":
+            print("Run did not pass -- check workload.log and stdout.log in the output directory.")
         if self.run_dir is not None:
             print(f"Output Directory: {self.run_dir.resolve()}")
+
+    def _telemetry_mode(self) -> str:
+        if self.args.tmc:
+            return "tmc (upload)" if not self.args.no_upload else "tmc (no upload)"
+        if self.args.metric == "emon" or self.args.emon:
+            return "emon (local)"
+        return self.args.metric
 
     # ------------------------------------------------------------------
     # benchpress result parsing (JSON "Results Report:" block)
@@ -448,6 +511,13 @@ class BaseWrapper(ABC):
             parsed = self.parse_output(stdout)
             kpis = self.get_kpis(parsed)
             status = "PASS" if returncode == 0 else "FAIL"
+            if status == "PASS" and not self.args.dry_run and not self._kpis_are_meaningful(kpis):
+                self.logger.error(
+                    "base_wrapper: %s exited 0 but produced no non-zero KPIs (%s); "
+                    "the benchmark did not actually run",
+                    self.get_workload_name(), kpis,
+                )
+                status = "FAIL"
         except Exception as exc:
             self.logger.error("base_wrapper: run failed: %s", exc)
             status = "FAIL"
