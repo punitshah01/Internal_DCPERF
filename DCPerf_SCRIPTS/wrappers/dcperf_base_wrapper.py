@@ -83,6 +83,11 @@ class BaseWrapper(ABC):
         self.tmc_runner = TmcRunner(self.config, self.logger, dry_run=self.args.dry_run)
 
         self.run_dir: Optional[Path] = None
+        self._result_session = (
+            f"corescaling_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if getattr(self.args, "core_scaling", False)
+            else None
+        )
         self._emon_process: Optional[subprocess.Popen] = None
         self._rows: List[Dict[str, Any]] = []
         self.cpu_monitor: Optional[CpuMonitor] = None
@@ -615,7 +620,9 @@ class BaseWrapper(ABC):
         self.validate_config()
         metadata = self.collect_metadata()
 
-        self.run_dir = self.result_manager.create_run_dir(self.get_workload_name())
+        self.run_dir = self.result_manager.create_run_dir(
+            self.get_workload_name(), self._result_session
+        )
         self.result_manager.write_system_metadata(self.run_dir, metadata)
 
         status = "FAIL"

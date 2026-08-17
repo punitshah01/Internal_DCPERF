@@ -2,17 +2,18 @@
 json_results.py conventions, enforcing the standard DCPerf result layout::
 
     results/
-    └── <workload>_<YYYYMMDD_HHMMSS>/
-        ├── stdout.log
-        ├── stderr.log
-        ├── metrics.json
-        ├── results.csv
-        ├── results.json
-        ├── system_metadata.json
-        ├── command.txt
-        └── emon/
-            ├── emon.dat
-            └── emon_summary/
+    └── <workload>/
+        └── <YYYYMMDD_HHMMSS>/
+            ├── stdout.log
+            ├── stderr.log
+            ├── metrics.json
+            ├── results.csv
+            ├── results.json
+            ├── system_metadata.json
+            ├── command.txt
+            └── emon/
+                ├── emon.dat
+                └── emon_summary/
 """
 
 from __future__ import annotations
@@ -85,8 +86,15 @@ class ResultManager:
     # Directory creation
     # ------------------------------------------------------------------
 
-    def create_run_dir(self, workload: str) -> Path:
-        run_dir = self.base_results_dir / f"{workload}_{self.timestamp}"
+    def create_run_dir(self, workload: str, session: Optional[str] = None) -> Path:
+        workload_dir = self.base_results_dir / workload
+        parent_dir = workload_dir / session if session else workload_dir
+        run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = parent_dir / run_timestamp
+        suffix = 1
+        while run_dir.exists():
+            run_dir = parent_dir / f"{run_timestamp}_{suffix}"
+            suffix += 1
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / "emon").mkdir(parents=True, exist_ok=True)

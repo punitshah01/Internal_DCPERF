@@ -580,7 +580,7 @@ def main() -> int:
         dcperf_score = collect_dcperf_score(config.get("dcperf_root"), logger)
 
     result_manager.write_summary(all_results, dcperf_score)
-    print(f"Results Directory: {result_manager.base_results_dir / result_manager.timestamp}")
+    print(f"Results Directory: {result_manager.base_results_dir.resolve()}")
 
     any_fail = any(r.get("status") != "PASS" for r in all_results)
     return 1 if any_fail else 0
