@@ -12,10 +12,12 @@ parse_benchpress_json() helper.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -164,11 +166,135 @@ class TaoBenchWrapper(BaseWrapper):
     # ------------------------------------------------------------------
     # SECTION D: OS tuning (pre_run) -- delegated to dcperf_os_tuner.tune_tao_bench()
     # via BaseWrapper.pre_run()'s apply_all() routing on get_workload_name().
+    # Background daemon thread tails tao-bench server log to trigger EMON on ready signal.
     # ------------------------------------------------------------------
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._stop_tail_event = None
+        self._tail_thread = None
+
     def pre_run(self) -> Dict[str, Any]:
-        """Apply the TaoBench OS tuning profile (tune_tao_bench, routed by base_wrapper)."""
+        """Apply the TaoBench OS tuning profile (tune_tao_bench, routed by base_wrapper).
+        Also spawn a daemon thread to tail the server log and write to a stable symlink.
+        """
+        dcperf_root = self.config.get("dcperf_root")
+        if dcperf_root:
+            self._setup_server_log_tail(dcperf_root)
         return super().pre_run()
+
+    def _setup_server_log_tail(self, dcperf_root: str) -> None:
+        """Spawn a daemon thread that tails the tao-bench-server-*.log file and writes
+        new lines to a stable file at <dcperf_root>/tao-bench-server-active.log.
+        TMC watches this stable file for the ramp_string signal.
+        """
+        active_log_path = Path(dcperf_root) / "tao-bench-server-active.log"
+        if not self.args.dry_run:
+            try:
+                active_log_path.touch(exist_ok=True)
+            except OSError as exc:
+                self.logger.error(
+                    "tao_bench_wrapper: Failed to create stable log at %s: %s",
+                    active_log_path, exc,
+                )
+                return
+
+        self._stop_tail_event = threading.Event()
+        self._tail_thread = threading.Thread(
+            target=self._tail_server_log,
+            args=(dcperf_root, str(active_log_path)),
+            daemon=True,
+        )
+        self._tail_thread.start()
+        self.logger.info(
+            "tao_bench_wrapper: Spawned daemon thread to tail server log -> %s",
+            active_log_path,
+        )
+
+    def _tail_server_log(self, dcperf_root: str, active_log_path: str) -> None:
+        """Daemon thread: poll for new tao-bench-server-*.log under benchmark_metrics_*/,
+        then continuously tail it and write new lines to active_log_path.
+        """
+        metrics_glob_start = time.time()
+        last_log_file = None
+        poll_interval = 2.0  # seconds
+        max_wait = 600.0  # max 10 minutes to find log file
+
+        while not self._stop_tail_event.is_set():
+            # Poll for new log files
+            try:
+                candidates = sorted(
+                    Path(dcperf_root).glob("benchmark_metrics_*/tao-bench-server-1-*.log")
+                )
+                if candidates:
+                    current_log = candidates[-1]  # newest
+                    # Check if this is a new file (created after pre_run started)
+                    if (
+                        last_log_file is None
+                        or current_log != last_log_file
+                    ):
+                        if current_log.stat().st_mtime > metrics_glob_start:
+                            last_log_file = current_log
+                            self.logger.info(
+                                "tao_bench_wrapper: Found new server log: %s",
+                                last_log_file,
+                            )
+                            break  # Found it, start tailing
+                elif time.time() - metrics_glob_start > max_wait:
+                    self.logger.warning(
+                        "tao_bench_wrapper: No tao-bench-server-*.log found after %d seconds."
+                        " Tail thread exiting.",
+                        int(max_wait),
+                    )
+                    return
+            except Exception as exc:
+                self.logger.error(
+                    "tao_bench_wrapper: Error polling for server log: %s",
+                    exc,
+                )
+                if time.time() - metrics_glob_start > max_wait:
+                    return
+
+            if self._stop_tail_event.wait(poll_interval):
+                return  # Stop signal received
+
+        # Tail the log file
+        if last_log_file is None:
+            return
+
+        try:
+            last_pos = 0
+            tail_interval = 0.5  # seconds
+            while not self._stop_tail_event.is_set():
+                try:
+                    with open(last_log_file, "r", encoding="utf-8", errors="ignore") as f:
+                        f.seek(last_pos)
+                        lines = f.readlines()
+                        if lines:
+                            with open(active_log_path, "a", encoding="utf-8") as out_f:
+                                out_f.writelines(lines)
+                            last_pos = f.tell()
+                except OSError as exc:
+                    self.logger.debug(
+                        "tao_bench_wrapper: Error reading server log: %s",
+                        exc,
+                    )
+                
+                if self._stop_tail_event.wait(tail_interval):
+                    break  # Stop signal received
+        except Exception as exc:
+            self.logger.error(
+                "tao_bench_wrapper: Tail thread error: %s",
+                exc,
+            )
+
+    def post_run(self) -> None:
+        """Stop the daemon tail thread before calling base_wrapper's post_run()."""
+        if self._stop_tail_event is not None:
+            self._stop_tail_event.set()
+        if self._tail_thread is not None and self._tail_thread.is_alive():
+            self._tail_thread.join(timeout=5.0)
+        super().post_run()
 
     # ------------------------------------------------------------------
     # SECTION E: job execution
@@ -184,25 +310,17 @@ class TaoBenchWrapper(BaseWrapper):
         return self.JOB_NAME_AUTOSCALE
 
     def get_tmc_profile(self) -> Dict[str, Any]:
-        """TaoBench standalone (run_standalone.py) blocks on
-        subprocess.communicate() for the whole warmup+test client run, so
-        nothing ever streams live into benchpress.log -- "Starting Siege for
-        benchmark" is actually MediaWiki's oss-performance ramp string
-        (packages/mediawiki/0001-oss-performance-scalable-hhvm.diff) and
-        tao_bench never prints it, so ramp-string detection (-rs/-rl) never
-        matches and EMON never collects during a real run.
-
-        Use tmc's lead-time (-lt) instead: it starts EMON a fixed number of
-        seconds after launching the command, with no log string required.
-        Wait out the warmup period (args_utils.get_warmup_time's formula:
-        max(5s/GB memsize, 1200s floor)) so collection only spans the actual
-        measured test_time window, sized to the real --test-time value
-        instead of a hardcoded 4200s.
+        """TaoBench collects EMON triggered by the server ready signal.
+        The daemon thread in pre_run() creates a stable symlink that TMC watches;
+        when the server writes the ready line to the log, TMC detects it and starts
+        EMON collection for the actual test window.
         """
-        warmup_time = max(5 * self.args.memsize, 1200)
+        dcperf_root = self.config.get("dcperf_root")
+        ramp_log = str(Path(dcperf_root) / "tao-bench-server-active.log") if dcperf_root else None
         return {
-            "ramp_log": None,
-            "lead_time": warmup_time,
+            "ramp_log": ramp_log,
+            "ramp_string": "All slow threads are created and running, waiting for requests.",
+            "ramp_timeout": max(5 * self.args.memsize, 1200) + 120,
             "start": 0,
             "end": self.args.test_time + 60,
         }
@@ -263,11 +381,6 @@ class TaoBenchWrapper(BaseWrapper):
                     "tao_bench_wrapper: Only %s/%s instances succeeded.", successful, spawned,
                 )
 
-            run_id = bp.get("run_id")
-            dcperf_root = self.config.get("dcperf_root")
-            if run_id and dcperf_root and self.run_dir is not None:
-                self._copy_server_metrics(dcperf_root, run_id)
-
             return parsed
 
         # Step 4: regex fallback if JSON not found (e.g. dry-run stdout).
@@ -281,33 +394,6 @@ class TaoBenchWrapper(BaseWrapper):
         if match:
             parsed["score"] = float(match.group(1))
         return parsed
-
-    # ------------------------------------------------------------------
-    # SECTION I: result files -- copy per-instance server CSVs/logs
-    # ------------------------------------------------------------------
-
-    def _copy_server_metrics(self, dcperf_root: str, run_id: str) -> None:
-        """Copy benchmark_metrics_<run_id>/server_N.csv + tao-bench-server-*.log
-        into run_dir/tao_bench_server_metrics/.
-        """
-        src_dir = Path(dcperf_root) / f"benchmark_metrics_{run_id}"
-        if not src_dir.exists():
-            self.logger.warning("tao_bench_wrapper: %s not found, no server metrics to copy", src_dir)
-            return
-
-        dest_dir = self.run_dir / "tao_bench_server_metrics"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
-        copied = 0
-        for pattern in ("server_*.csv", "tao-bench-server-*.log"):
-            for src_file in src_dir.glob(pattern):
-                try:
-                    shutil.copy2(src_file, dest_dir / src_file.name)
-                    copied += 1
-                except OSError as exc:
-                    self.logger.error("tao_bench_wrapper: failed to copy %s: %s", src_file, exc)
-
-        self.logger.info("tao_bench_wrapper: Copied %d server CSV files to results directory", copied)
 
     # ------------------------------------------------------------------
     # SECTION G: KPI calculation
