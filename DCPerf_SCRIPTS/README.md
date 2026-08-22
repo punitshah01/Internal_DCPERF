@@ -69,8 +69,10 @@ dnf config-manager --set-enabled crb
 
 | Mode | Flag | Behaviour |
 | --- | --- | --- |
-| Local EMON | `--emon` | `emon -collect-edp` runs alongside the workload; raw `emon.dat` plus local EDP output stay in the run directory. Nothing is uploaded. |
-| TMC | `--tmc` | The workload runs *under* `tmc`, which handles ramp detection, the EMON collection window, and (unless `--no-upload`) uploads the session as `emon_user`. This reproduces the pre-automation `*_perf.sh` behaviour. |
+| Local EMON | `-e` / `--emon` | `emon -collect-edp` runs alongside the workload; raw `emon.dat` plus local EDP output stay in the run directory under `emon/emon_raw/` and `emon/emon_processed/`. Nothing is uploaded. |
+| TMC upload | `-ue` / `--upload-emon` | Implies `-e`. The workload runs *under* `tmc`, which handles ramp detection, the EMON collection window, and (unless `--no-upload`) uploads the session as `emon_user`/`tmc.emon_user`. This reproduces the pre-automation `*_perf.sh` behaviour. `emon/tmc_upload.log` records the resulting trace location. |
+
+`--tmc` has been removed — use `-ue`/`--upload-emon` instead. Missing prerequisites downgrade gracefully: `-ue` without `tmc.endpoint`/`emon_user` configured falls back to local-only EMON (`-e`); `-e` without `emon.sep_path`/`sep_path` configured skips telemetry entirely, logging an error either way instead of failing the run.
 
 Each wrapper supplies its baseline TMC profile (ramp string, ramp log, `-S`/`-E` window, views, `-Z`/`-G`/`-T`) via `get_tmc_profile()`, taken from the corresponding `mw_perf.sh` / `dj_perf.sh` / `fs_perf.sh` / `sweep.sh` / `tao_perf.sh` / `vt_script.sh`. Any of it can be overridden on the CLI with `-S`, `-E`, `-w`, `-Z`, `-G`, `-T`, `-rt`, `-a`, `-x`.
 
@@ -109,14 +111,17 @@ python dcperf_run.py --install-only --workload tao_bench
 # Run everything
 python dcperf_run.py --run-only --all
 
-# Run with EMON telemetry
-python dcperf_run.py --run-only --all --emon
+# Run with local EMON telemetry only
+python dcperf_run.py --run-only --all -e
 
-# Run one workload
-python dcperf_run.py --run-only --workload django_workload
+# Run with EMON telemetry + TMC upload
+python dcperf_run.py --run-only --all -ue
+
+# Run one workload, grouped under a named experiment
+python dcperf_run.py --run-only --workload django_workload --experiment my_experiment
 
 # Dry run (no execution, shows commands)
-python dcperf_run.py --dry-run --all --emon
+python dcperf_run.py --dry-run --all -e
 
 # Resume after failure
 python dcperf_run.py --run-only --all --resume
@@ -125,7 +130,10 @@ python dcperf_run.py --run-only --all --resume
 python dcperf_run.py --install-only --workload tao_bench --force
 
 # Full install + run
-python dcperf_run.py --all --emon
+python dcperf_run.py --all -ue
+
+# Override the results base directory
+python dcperf_run.py --run-only --all --results-dir /data/dcperf_results
 ```
 
 ## 5. Configuration Reference
@@ -152,28 +160,40 @@ python dcperf_run.py --all --emon
 | `tao_bench_mode` | No | `standalone` | Default tao_bench `--mode` |
 | `java_path` | No | `null` | Auto-populated Java 8 path |
 | `clear_tmp` | No | `false` | Allow `clear_tmp()` to run `rm -rf /tmp/*` |
-| `results_base_dir` | No | `DCPerf_SCRIPTS/results` | Base output directory |
+| `results_base_dir` | No | `DCPerf_SCRIPTS/results` | Base output directory (overridable per-invocation with `--results-dir`) |
+| `emon.sep_path` | Yes* | `null` | Structured EMON config, required by `-e`; falls back to flat `sep_path` if unset |
+| `emon.event_file` | No | `null` | Structured equivalent of `emon_event_file` |
+| `tmc.endpoint` | Yes* | `null` | Required by `-ue`; falls back to flat `emon_user` presence if unset |
+| `tmc.emon_user` | Yes* | `null` | Structured equivalent of `emon_user`, used for TMC upload |
+| `tmc.upload_timeout` | No | `300` | Seconds before a TMC upload is considered failed |
+| `tmc.project_id` | No | `null` | Optional TMC session group/project tag |
 
-\* Required only for that workload.
+\* Required only for that workload/flag.
 
 ## 6. Result Directory Layout
 
 ```
 results/
-└── <workload>_<YYYYMMDD_HHMMSS>/
-    ├── stdout.log             # raw benchpress stdout
-    ├── stderr.log             # raw benchpress stderr
-    ├── metrics.json           # final KPI dict (+ os_tuning / cpu_utilization / spark_prerequisites when applicable)
-    ├── results.csv            # smart-append CSV, one row per run
-    ├── results.json           # {version, orch_run_id, rows[]} — WLC contract source of truth
-    ├── system_metadata.json   # hostname/cpu/cores/kernel/os snapshot
-    ├── command.txt            # exact argv that ran
-    ├── benchmark_metrics/     # benchpress's own benchmark_metrics_<run_id>/ output, preserved
-    ├── tao_bench_server_metrics/  # tao_bench only: per-server QPS CSVs + logs
-    └── emon/
-        ├── emon.dat           # raw EMON data (if --emon/--metric emon)
-        └── emon_summary/      # EDP-processed output (dcperf_emon_manager.process_emon)
+├── consolidated_results.xlsx     # one sheet per workload, one row appended per session
+└── <workload>/
+    └── <experiment>/             # --experiment name, or exp_<YYYYMMDD> if omitted
+        └── session_<NNN>_<YYYYMMDD_HHMMSS>/
+            ├── stdout.log             # raw benchpress stdout
+            ├── stderr.log             # raw benchpress stderr
+            ├── metrics.json           # final KPI dict (+ os_tuning / cpu_utilization / spark_prerequisites when applicable)
+            ├── results.csv            # smart-append CSV, one row per run
+            ├── results.json           # {version, orch_run_id, rows[]} — WLC contract source of truth
+            ├── system_metadata.json   # hostname/cpu/cores/kernel/os snapshot
+            ├── command.txt            # exact argv that ran
+            ├── benchmark_metrics/     # benchpress's own benchmark_metrics_<run_id>/ output, preserved
+            ├── tao_bench_server_metrics/  # tao_bench only: per-server QPS CSVs + logs
+            └── emon/
+                ├── emon_raw/          # raw EMON data (if -e/-ue)
+                ├── emon_processed/   # EDP-processed output (dcperf_emon_manager.process_emon)
+                └── tmc_upload.log    # only present if -ue was used
 ```
+
+`session_<NNN>` auto-increments per experiment folder (`session_001_...`, `session_002_...`) rather than being purely timestamp-keyed, so sessions within one experiment sort and count predictably. `consolidated_results.xlsx` (openpyxl, `fcntl.flock`-guarded for concurrent runs) gets one appended row per completed session per workload, with columns: `session_id, experiment, timestamp, host, kernel, cpu_model, core_count, primary_kpi, kpi_unit, p50_latency_ms, p99_latency_ms, status, emon_collected, tmc_uploaded, tmc_link, session_path, notes`.
 
 A `summary_<timestamp>/run_summary.json` + `run_summary.txt` is written once per `dcperf_run.py` invocation, aggregating every workload run in that session.
 
@@ -242,9 +262,9 @@ A `summary_<timestamp>/run_summary.json` + `run_summary.txt` is written once per
 
 ## 8. EMON / Telemetry
 
-- Enable with `--emon`/`-e` or `--metric emon` on any wrapper, or `--emon` on `dcperf_run.py --run-only --all`.
-- Event file is platform-specific — set `emon_event_file` in `config/dcperf_config.yaml` to the correct `<sep_path>/config/edp/<platform>_server_events*.txt`.
-- Raw output goes to `results/<workload>_<timestamp>/emon/emon.dat`; processed EDP summaries go to `emon/emon_summary/` via `dcperf_emon_manager.process_emon()`.
+- Enable with `-e`/`--emon` (local only) or `-ue`/`--upload-emon` (local + TMC upload, implies `-e`) on any wrapper or on `dcperf_run.py`. `--tmc` no longer exists.
+- Event file is platform-specific — set `emon.event_file` (or the legacy `emon_event_file`) in `config/dcperf_config.yaml` to the correct `<sep_path>/config/edp/<platform>_server_events*.txt`.
+- Raw output goes to `results/<workload>/<experiment>/session_<NNN>_<timestamp>/emon/emon_raw/`; processed EDP summaries go to `emon/emon_processed/` via `dcperf_emon_manager.process_emon()`; `-ue` additionally writes `emon/tmc_upload.log`.
 - View selection: `--core-view/-cv`, `--uncore-view/-uv`, `--detailed-view/-dv` (socket view is always included).
 
 ## 9. Troubleshooting

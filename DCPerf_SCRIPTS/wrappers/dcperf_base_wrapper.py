@@ -75,6 +75,8 @@ class BaseWrapper(ABC):
         self.config_manager = ConfigManager(config_path, self.logger)
         self.config: Dict[str, Any] = self.config_manager.load()
 
+        self._apply_emon_flag_validation()
+
         results_base = Path(self.config.get("results_base_dir") or (DCPERF_SCRIPTS_ROOT / "results"))
         self.result_manager = ResultManager(results_base, self.logger)
 
@@ -140,7 +142,7 @@ class BaseWrapper(ABC):
         parser.add_argument("--cores", type=int, default=None, help="Number of cores to enable before running")
         parser.add_argument("--force", "-f", action="store_true", help="Force reinstall (passed through to benchpress_cli.py install -f)")
         tmc_group = parser.add_argument_group("TMC telemetry (EMON collection + upload)")
-        tmc_group.add_argument("--tmc", action="store_true", help="Run the workload under tmc instead of local emon")
+        tmc_group.add_argument("-ue", "--upload-emon", action="store_true", help="Collect EMON and upload to TMC (implies -e/--emon)")
         tmc_group.add_argument("--no-upload", action="store_true", help="Run tmc without uploading (drops -u)")
         tmc_group.add_argument("--emon-user", "-x", default=None, help="TMC upload user (default: emon_user from config)")
         tmc_group.add_argument("--tmc-alias", "-a", default=None, help="TMC session alias (default: <workload>_<timestamp>)")
@@ -157,6 +159,22 @@ class BaseWrapper(ABC):
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
         """Hook for subclasses to add workload-specific CLI arguments."""
+
+    def _apply_emon_flag_validation(self) -> None:
+        """-ue implies -e; downgrade gracefully (log + disable) when the
+        config needed for the requested telemetry level is missing."""
+        if self.args.upload_emon:
+            self.args.emon = True
+        if self.args.upload_emon and not (self.config.get("tmc") or {}).get("endpoint") and not self.config.get("emon_user"):
+            self.logger.error(
+                "base_wrapper: -ue requires tmc.endpoint (or emon_user) in dcperf_config.yaml. "
+                "Falling back to local EMON only."
+            )
+            self.args.upload_emon = False
+        if self.args.emon and not ((self.config.get("emon") or {}).get("sep_path") or self.config.get("sep_path")):
+            self.logger.error("base_wrapper: -e requires emon.sep_path in dcperf_config.yaml. Skipping EMON collection.")
+            self.args.emon = False
+            self.args.upload_emon = False
 
     # ------------------------------------------------------------------
     # Execution flow steps
@@ -211,7 +229,7 @@ class BaseWrapper(ABC):
 
     def setup_telemetry(self, emon_output_file: str) -> None:
         # TMC starts and uploads its own EMON collection around the workload.
-        if self.args.tmc:
+        if self.args.upload_emon:
             return
         if self.args.metric == "emon" or self.args.emon:
             self._emon_process = self.emon_manager.start_emon(emon_output_file)
@@ -334,7 +352,7 @@ class BaseWrapper(ABC):
         # holds only this run's output, from the very first line.
         self._reset_ramp_log(str(Path(dcperf_root) / "benchpress.log"))
 
-        if self.args.tmc:
+        if self.args.upload_emon:
             if not self.args.dry_run and not self.tmc_runner.is_available():
                 return 1, "", "tmc not found on PATH"
             profile = self._resolve_tmc_profile()
@@ -535,7 +553,7 @@ class BaseWrapper(ABC):
             print(f"Output Directory: {self.run_dir.resolve()}")
 
     def _telemetry_mode(self) -> str:
-        if self.args.tmc:
+        if self.args.upload_emon:
             return "tmc (upload)" if not self.args.no_upload else "tmc (no upload)"
         if self.args.metric == "emon" or self.args.emon:
             return "emon (local)"
@@ -621,7 +639,7 @@ class BaseWrapper(ABC):
         metadata = self.collect_metadata()
 
         self.run_dir = self.result_manager.create_run_dir(
-            self.get_workload_name(), self._result_session
+            self.get_workload_name(), self._result_session, experiment=self.args.experiment or None
         )
         self.result_manager.write_system_metadata(self.run_dir, metadata)
 
@@ -631,7 +649,8 @@ class BaseWrapper(ABC):
         returncode = 1
 
         try:
-            self.setup_telemetry(str(self.run_dir / "emon" / "emon.dat"))
+            emon_raw_dir = self.result_manager.get_emon_raw_dir(self.run_dir)
+            self.setup_telemetry(str(emon_raw_dir / "emon.dat"))
             self.pre_run()
 
             extra_args: List[str] = []
@@ -696,6 +715,42 @@ class BaseWrapper(ABC):
             if self._cpu_monitor_result:
                 metrics_payload["cpu_utilization"] = self._cpu_monitor_result
             self.result_manager.save_metrics(self.run_dir, metrics_payload)
+
+            if self.args.upload_emon and self._tmc_result_dir:
+                self.result_manager.write_tmc_upload_log(
+                    self.run_dir, f"tmc trace directory: {self._tmc_result_dir}"
+                )
+
+            try:
+                self.result_manager.append_to_consolidated(
+                    self.get_workload_name(), self._build_consolidated_row(metadata, kpis, status)
+                )
+            except Exception as exc:
+                self.logger.warning("base_wrapper: could not update consolidated_results.xlsx: %s", exc)
+
             self.print_summary(status, kpis)
 
         return 0 if status == "PASS" else 1
+
+    def _build_consolidated_row(self, metadata: Dict[str, Any], kpis: Dict[str, Any], status: str) -> Dict[str, Any]:
+        """Assemble one consolidated_results.xlsx row from this run's metadata/KPIs."""
+        primary_kpi_name = next(iter(kpis), None)
+        return {
+            "session_id": self.run_dir.name if self.run_dir is not None else "",
+            "experiment": self.args.experiment or "",
+            "timestamp": metadata.get("timestamp", ""),
+            "host": metadata.get("hostname", ""),
+            "kernel": metadata.get("kernel", ""),
+            "cpu_model": metadata.get("cpu_model", ""),
+            "core_count": metadata.get("online_cores", ""),
+            "primary_kpi": kpis.get(primary_kpi_name, "") if primary_kpi_name else "",
+            "kpi_unit": primary_kpi_name or "",
+            "p50_latency_ms": kpis.get("p50_latency_ms", ""),
+            "p99_latency_ms": kpis.get("p99_latency_ms", ""),
+            "status": status,
+            "emon_collected": bool(self.args.emon or self.args.upload_emon),
+            "tmc_uploaded": bool(self.args.upload_emon and self._tmc_result_dir),
+            "tmc_link": self._tmc_result_dir,
+            "session_path": str(self.run_dir) if self.run_dir is not None else "",
+            "notes": "",
+        }

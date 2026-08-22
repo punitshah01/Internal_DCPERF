@@ -65,9 +65,27 @@ class VideoWrapper(BaseWrapper):
         if not self.config.get("video_dataset_path"):
             self.config["video_dataset_path"] = self.config_manager.require("video_dataset_path")
 
+    def pre_install_hook(self) -> bool:
+        """Download/extract the dataset once at install time, not on every run."""
+        if not self.config.get("video_dataset_path"):
+            self.config["video_dataset_path"] = self.config_manager.require("video_dataset_path")
+        return self.prepare_dataset()
+
     def pre_run(self) -> Dict[str, Any]:
-        self.prepare_dataset()
+        if not self._dataset_ready():
+            self.logger.error(
+                "video_wrapper: dataset missing at %s -- run "
+                "dcperf_run.py --install-only --workload video_transcode_bench first",
+                self.config.get("video_dataset_path"),
+            )
         return super().pre_run()
+
+    def _dataset_ready(self) -> bool:
+        dataset_path = self.config.get("video_dataset_path")
+        if not dataset_path:
+            return False
+        cuts_dir = Path(dataset_path) / "cuts"
+        return cuts_dir.exists() and any(cuts_dir.iterdir())
 
     def prepare_dataset(self) -> bool:
         """Download and extract the El Fuente (.y4m) dataset if not already present."""

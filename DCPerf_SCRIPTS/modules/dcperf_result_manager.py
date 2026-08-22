@@ -3,17 +3,23 @@ json_results.py conventions, enforcing the standard DCPerf result layout::
 
     results/
     └── <workload>/
-        └── <YYYYMMDD_HHMMSS>/
-            ├── stdout.log
-            ├── stderr.log
-            ├── metrics.json
-            ├── results.csv
-            ├── results.json
-            ├── system_metadata.json
-            ├── command.txt
-            └── emon/
-                ├── emon.dat
-                └── emon_summary/
+        └── <experiment>/
+            └── session_<NNN>_<YYYYMMDD_HHMMSS>/
+                ├── stdout.log
+                ├── stderr.log
+                ├── metrics.json
+                ├── results.csv
+                ├── results.json
+                ├── system_metadata.json
+                ├── command.txt
+                └── emon/
+                    ├── emon_raw/
+                    ├── emon_processed/
+                    └── tmc_upload.log   (only if -ue used)
+
+``<experiment>`` defaults to ``exp_<YYYYMMDD>`` when --experiment is not
+given. ``consolidated_results.xlsx`` (one sheet per workload) lives directly
+under the base results dir -- see append_to_consolidated().
 """
 
 from __future__ import annotations
@@ -29,8 +35,25 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - fcntl is POSIX-only; SUTs are Linux
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import openpyxl
+except ImportError:  # pragma: no cover - optional until requirements.txt is installed
+    openpyxl = None  # type: ignore[assignment]
+
 _SCORE_LINE_RE = re.compile(r"^(\w+):\s*([\d.]+),\s*single data point", re.MULTILINE)
 _OVERALL_SCORE_RE = re.compile(r"DCPerf overall score:\s*([\d.]+)", re.IGNORECASE)
+_SESSION_DIR_RE = re.compile(r"^session_(\d+)_")
+
+CONSOLIDATED_COLUMNS = [
+    "session_id", "experiment", "timestamp", "host", "kernel", "cpu_model", "core_count",
+    "primary_kpi", "kpi_unit", "p50_latency_ms", "p99_latency_ms", "status",
+    "emon_collected", "tmc_uploaded", "tmc_link", "session_path", "notes",
+]
 
 
 def collect_dcperf_score(dcperf_root: Optional[str], logger) -> Dict[str, Any]:
@@ -86,23 +109,71 @@ class ResultManager:
     # Directory creation
     # ------------------------------------------------------------------
 
-    def create_run_dir(self, workload: str, session: Optional[str] = None) -> Path:
-        workload_dir = self.base_results_dir / workload
-        parent_dir = workload_dir / session if session else workload_dir
+    def create_run_dir(self, workload: str, session: Optional[str] = None, experiment: Optional[str] = None) -> Path:
+        """Create results/<workload>/<experiment>/[session]/session_<NNN>_<timestamp>/.
+
+        ``experiment`` defaults to ``exp_<YYYYMMDD>`` (sanitized). ``session``
+        is the pre-existing corescaling-sweep grouping folder, kept as an
+        extra path segment under the experiment when supplied.
+        """
+        experiment_name = self._sanitize_name(experiment) if experiment else f"exp_{datetime.now().strftime('%Y%m%d')}"
+        parent_dir = self.base_results_dir / workload / experiment_name
+        if session:
+            parent_dir = parent_dir / session
         run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = parent_dir / run_timestamp
+        session_id = self._build_session_id(parent_dir, run_timestamp)
+        run_dir = parent_dir / session_id
         suffix = 1
         while run_dir.exists():
-            run_dir = parent_dir / f"{run_timestamp}_{suffix}"
+            run_dir = parent_dir / f"{session_id}_{suffix}"
             suffix += 1
         try:
             run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / "emon").mkdir(parents=True, exist_ok=True)
-            (run_dir / "emon" / "emon_summary").mkdir(parents=True, exist_ok=True)
+            (run_dir / "emon" / "emon_raw").mkdir(parents=True, exist_ok=True)
+            (run_dir / "emon" / "emon_processed").mkdir(parents=True, exist_ok=True)
         finally:
             # Printed on both success and failure paths (Gate C contract).
             print(f"Output Directory: {run_dir.resolve()}")
         return run_dir
+
+    def _build_session_id(self, parent_dir: Path, timestamp: str) -> str:
+        """Count existing session_* dirs in parent_dir; return session_<NNN+1>_<timestamp>."""
+        existing = 0
+        if parent_dir.exists():
+            for child in parent_dir.iterdir():
+                if child.is_dir() and _SESSION_DIR_RE.match(child.name):
+                    existing += 1
+        return f"session_{existing + 1:03d}_{timestamp}"
+
+    @staticmethod
+    def _sanitize_name(name: str) -> str:
+        """Lowercase, replace non-alphanumeric chars with underscore, truncate to 64 chars."""
+        sanitized = re.sub(r"[^a-z0-9]+", "_", name.strip().lower()).strip("_")
+        return (sanitized or "exp")[:64]
+
+    def get_emon_raw_dir(self, run_dir: Path) -> Path:
+        """Create (if needed) and return <run_dir>/emon/emon_raw/."""
+        path = Path(run_dir) / "emon" / "emon_raw"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def get_emon_processed_dir(self, run_dir: Path) -> Path:
+        """Create (if needed) and return <run_dir>/emon/emon_processed/."""
+        path = Path(run_dir) / "emon" / "emon_processed"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def write_tmc_upload_log(self, run_dir: Path, content: str, tmc_link: str = "") -> Path:
+        """Write emon/tmc_upload.log with upload status and optional TMC URL."""
+        log_path = Path(run_dir) / "emon" / "tmc_upload.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        text = content or ""
+        if tmc_link:
+            text += f"\ntmc_link: {tmc_link}\n"
+        log_path.write_text(text, encoding="utf-8")
+        self.logger.debug("result_manager: wrote %s", log_path)
+        return log_path
 
     # ------------------------------------------------------------------
     # Simple artifact writers
@@ -150,6 +221,54 @@ class ResultManager:
             writer.writerow(values)
 
         self.logger.info("result_manager: wrote row to %s", csv_file)
+
+    # ------------------------------------------------------------------
+    # Consolidated cross-run workbook (one sheet per workload)
+    # ------------------------------------------------------------------
+
+    def append_to_consolidated(self, workload: str, row_data: Dict[str, Any]) -> None:
+        """Append one row to consolidated_results.xlsx on the <workload> sheet.
+
+        Creates the file and/or sheet if missing. Never overwrites or deletes
+        existing rows. Uses fcntl.flock on a sidecar .lock file so concurrent
+        runs across workloads/hosts don't corrupt the workbook.
+        """
+        if openpyxl is None:
+            self.logger.warning("result_manager: openpyxl not installed, skipping consolidated_results.xlsx")
+            return
+
+        xlsx_path = self.base_results_dir / "consolidated_results.xlsx"
+        lock_path = self.base_results_dir / "consolidated_results.xlsx.lock"
+        self.base_results_dir.mkdir(parents=True, exist_ok=True)
+        row = [row_data.get(col, "") for col in CONSOLIDATED_COLUMNS]
+
+        lock_file = open(lock_path, "w")
+        try:
+            if fcntl is not None:
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                if xlsx_path.exists():
+                    workbook = openpyxl.load_workbook(xlsx_path)
+                else:
+                    workbook = openpyxl.Workbook()
+                    workbook.remove(workbook.active)  # drop the default blank sheet
+
+                if workload in workbook.sheetnames:
+                    sheet = workbook[workload]
+                else:
+                    sheet = workbook.create_sheet(title=workload)
+                    sheet.append(CONSOLIDATED_COLUMNS)
+
+                sheet.append(row)
+                workbook.save(xlsx_path)
+                self.logger.debug("result_manager: appended row to %s!%s", xlsx_path, workload)
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+        except OSError as exc:
+            self.logger.error("result_manager: failed to update consolidated_results.xlsx: %s", exc)
+        finally:
+            lock_file.close()
 
     # ------------------------------------------------------------------
     # JSON results writer (PNPWLS json_results.py style)

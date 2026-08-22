@@ -184,18 +184,9 @@ class TaoBenchWrapper(BaseWrapper):
         return self.JOB_NAME_AUTOSCALE
 
     def get_tmc_profile(self) -> Dict[str, Any]:
-        """TaoBench collects EMON triggered by server ready signal via ramp_string.
-        When the server prints the ready message to stdout (captured in benchpress.log),
-        TMC detects it and starts EMON collection for the actual test window.
-        Follows same pattern as MediaWiki and FeedSim.
-        """
-        warmup_time = max(5 * self.args.memsize, 1200)
-        return {
-            "ramp_string": "All slow threads are created and running, waiting for requests.",
-            "ramp_timeout": warmup_time + 120,
-            "start": warmup_time + 120,
-            "end": self.args.test_time + 300,
-        }
+        """Start EMON 15 minutes after TaoBench launches and let it run until
+        TaoBench completes (no end offset, no ramp marker to wait on)."""
+        return {"start": 900}
 
     def get_job_vars(self) -> Dict[str, Any]:
         job_vars: Dict[str, Any] = {

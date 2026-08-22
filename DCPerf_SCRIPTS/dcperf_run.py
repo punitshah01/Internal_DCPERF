@@ -8,8 +8,10 @@ Usage:
     python dcperf_run.py --workload tao_bench
     python dcperf_run.py --dry-run --all
     python dcperf_run.py --resume
-    python dcperf_run.py --emon --all
+    python dcperf_run.py -e --all
+    python dcperf_run.py -ue --all --experiment my_experiment
 """
+
 
 from __future__ import annotations
 
@@ -493,10 +495,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workload", action="append", default=[], choices=list(WORKLOAD_REGISTRY.keys()), help="Select one workload (repeatable)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
     parser.add_argument("--resume", action="store_true", help="Skip already-installed workloads")
-    parser.add_argument("--emon", action="store_true", help="Enable EMON telemetry for all selected workloads")
-    parser.add_argument("--tmc", action="store_true", help="Collect and upload EMON via tmc for all selected workloads")
-    parser.add_argument("--no-upload", action="store_true", help="With --tmc, collect without uploading")
+    parser.add_argument("-e", "--emon", action="store_true", help="Enable EMON telemetry for all selected workloads")
+    parser.add_argument("-ue", "--upload-emon", action="store_true", help="Collect EMON and upload to TMC for all selected workloads (implies -e)")
+    parser.add_argument("--no-upload", action="store_true", help="With -ue, collect without uploading")
     parser.add_argument("--emon-user", default=None, help="TMC upload user (default: emon_user from config)")
+    parser.add_argument("--experiment", type=str, default=None, help="Experiment name for grouping related sessions. Creates results/<workload>/<experiment>/session_NNN_<timestamp>/. If omitted, defaults to exp_YYYYMMDD.")
+    parser.add_argument("--results-dir", type=Path, default=None, help="Override default results base directory. Default: DCPerf_SCRIPTS/results/.")
     parser.add_argument("--force", "-f", action="store_true", help="Force reinstall: remove from dcperf_install_state.txt and pass -f to benchpress_cli.py install")
     return parser
 
@@ -520,6 +524,16 @@ def main() -> int:
     config_manager = ConfigManager(SCRIPT_DIR / "config" / "dcperf_config.yaml", logger)
     config = config_manager.load()
 
+    if args.upload_emon:
+        args.emon = True
+    if args.upload_emon and not config.get("tmc", {}).get("endpoint") and not config.get("emon_user"):
+        logger.error("-ue requires tmc.endpoint (or emon_user) in dcperf_config.yaml. Falling back to local EMON only.")
+        args.upload_emon = False
+    if args.emon and not config.get("emon", {}).get("sep_path") and not config.get("sep_path"):
+        logger.error("-e requires emon.sep_path in dcperf_config.yaml. Skipping EMON collection.")
+        args.emon = False
+        args.upload_emon = False
+
     if not run_preflight_checks(config, logger, args.dry_run):
         logger.error("master_setup: preflight checks failed and user declined to continue")
         return 1
@@ -527,7 +541,7 @@ def main() -> int:
     do_install = args.all or args.install_only
     do_run = args.all or args.run_only or (not args.install_only)
 
-    if args.tmc:
+    if args.upload_emon:
         _install_known_hosts(config, logger, args.dry_run)
 
     if do_install:
@@ -537,7 +551,7 @@ def main() -> int:
 
     workloads = _selected_workloads(args)
     result_manager = ResultManager(
-        Path(config.get("results_base_dir") or (SCRIPT_DIR / "results")), logger,
+        args.results_dir or Path(config.get("results_base_dir") or (SCRIPT_DIR / "results")), logger,
     )
 
     all_results: List[Dict[str, Any]] = []
@@ -565,12 +579,14 @@ def main() -> int:
             extra_argv.append("--dry-run")
         if args.emon:
             extra_argv.append("--emon")
-        if args.tmc:
-            extra_argv.append("--tmc")
+        if args.upload_emon:
+            extra_argv.append("--upload-emon")
         if args.no_upload:
             extra_argv.append("--no-upload")
         if args.emon_user:
             extra_argv += ["--emon-user", args.emon_user]
+        if args.experiment:
+            extra_argv += ["--experiment", args.experiment]
 
         result = _run_workload(workload, wrapper_cls, extra_argv)
         all_results.append(result)

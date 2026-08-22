@@ -79,6 +79,22 @@ video_dataset_path: null
 video_dataset_url: https://af01p-or.devtools.intel.com/artifactory/dpgpaivsoworkloads-or-local/base/workloads/dcperf/cuts.tar.gz
 
 # ---------------------------------------------------------------------------
+# EMON / TMC (structured) -- required by -e (emon.sep_path) and -ue
+# (tmc.endpoint). The flat sep_path/emon_event_file/emon_user keys above are
+# still read as a fallback so existing configs keep working.
+# ---------------------------------------------------------------------------
+emon:
+  sep_path: /opt/intel/sep
+  event_file: null
+  post_process: true
+
+tmc:
+  endpoint: null
+  emon_user: null
+  upload_timeout: 300
+  project_id: null
+
+# ---------------------------------------------------------------------------
 # Core scaling / run defaults
 # ---------------------------------------------------------------------------
 
