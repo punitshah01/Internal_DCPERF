@@ -194,7 +194,7 @@ class TaoBenchWrapper(BaseWrapper):
             "ramp_string": "All slow threads are created and running, waiting for requests.",
             "ramp_timeout": warmup_time + 120,
             "start": 0,
-            "end": self.args.test_time + 60,
+            "end": self.args.test_time + 300,
         }
 
     def get_job_vars(self) -> Dict[str, Any]:
