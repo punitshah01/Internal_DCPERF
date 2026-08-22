@@ -48,12 +48,20 @@ class VideoWrapper(BaseWrapper):
 
     @classmethod
     def add_arguments(cls, parser) -> None:
-        parser.add_argument("--encoder", choices=["svt", "x264", "aom"], required=True)
-        parser.add_argument("--runtime", choices=["short", "medium", "long"], required=True)
+        # Not required=True: dcperf_run.py's install path instantiates this
+        # wrapper with only --dry-run/--force (install builds all 3 encoders,
+        # see JOB_NAME comment), so encoder/runtime must stay optional here.
+        # Enforced instead in validate_config(), which only runs before run().
+        parser.add_argument("--encoder", choices=["svt", "x264", "aom"], default=None)
+        parser.add_argument("--runtime", choices=["short", "medium", "long"], default=None)
         parser.add_argument("--core-scaling", action="store_true", help="Run a core-scaling sweep")
         parser.add_argument("--total-cores", type=int, default=None, help="Total cores for scaling sweep")
 
     def validate_config(self) -> None:
+        if not self.args.encoder:
+            raise SystemExit("video_transcode_bench: --encoder is required (svt|x264|aom)")
+        if not self.args.runtime:
+            raise SystemExit("video_transcode_bench: --runtime is required (short|medium|long)")
         if not self.config.get("video_dataset_path"):
             self.config["video_dataset_path"] = self.config_manager.require("video_dataset_path")
 
