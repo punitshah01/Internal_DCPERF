@@ -12,12 +12,10 @@ parse_benchpress_json() helper.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -166,135 +164,28 @@ class TaoBenchWrapper(BaseWrapper):
     # ------------------------------------------------------------------
     # SECTION D: OS tuning (pre_run) -- delegated to dcperf_os_tuner.tune_tao_bench()
     # via BaseWrapper.pre_run()'s apply_all() routing on get_workload_name().
-    # Background daemon thread tails tao-bench server log to trigger EMON on ready signal.
+    # Create stable log file for TMC ramp_string detection.
     # ------------------------------------------------------------------
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._stop_tail_event = None
-        self._tail_thread = None
 
     def pre_run(self) -> Dict[str, Any]:
         """Apply the TaoBench OS tuning profile (tune_tao_bench, routed by base_wrapper).
-        Also spawn a daemon thread to tail the server log and write to a stable symlink.
+        Also create stable log file that benchpress will tail to.
         """
         dcperf_root = self.config.get("dcperf_root")
-        if dcperf_root:
-            self._setup_server_log_tail(dcperf_root)
-        return super().pre_run()
-
-    def _setup_server_log_tail(self, dcperf_root: str) -> None:
-        """Spawn a daemon thread that tails the tao-bench-server-*.log file and writes
-        new lines to a stable file at <dcperf_root>/tao-bench-server-active.log.
-        TMC watches this stable file for the ramp_string signal.
-        """
-        active_log_path = Path(dcperf_root) / "tao-bench-server-active.log"
-        if not self.args.dry_run:
+        if dcperf_root and not self.args.dry_run:
             try:
+                active_log_path = Path(dcperf_root) / "tao-bench-server-active.log"
                 active_log_path.touch(exist_ok=True)
+                self.logger.info(
+                    "tao_bench_wrapper: Created stable log file for ramp detection: %s",
+                    active_log_path,
+                )
             except OSError as exc:
-                self.logger.error(
-                    "tao_bench_wrapper: Failed to create stable log at %s: %s",
-                    active_log_path, exc,
-                )
-                return
-
-        self._stop_tail_event = threading.Event()
-        self._tail_thread = threading.Thread(
-            target=self._tail_server_log,
-            args=(dcperf_root, str(active_log_path)),
-            daemon=True,
-        )
-        self._tail_thread.start()
-        self.logger.info(
-            "tao_bench_wrapper: Spawned daemon thread to tail server log -> %s",
-            active_log_path,
-        )
-
-    def _tail_server_log(self, dcperf_root: str, active_log_path: str) -> None:
-        """Daemon thread: poll for new tao-bench-server-*.log under benchmark_metrics_*/,
-        then continuously tail it and write new lines to active_log_path.
-        """
-        metrics_glob_start = time.time()
-        last_log_file = None
-        poll_interval = 2.0  # seconds
-        max_wait = 600.0  # max 10 minutes to find log file
-
-        while not self._stop_tail_event.is_set():
-            # Poll for new log files
-            try:
-                candidates = sorted(
-                    Path(dcperf_root).glob("benchmark_metrics_*/tao-bench-server-1-*.log")
-                )
-                if candidates:
-                    current_log = candidates[-1]  # newest
-                    # Check if this is a new file (created after pre_run started)
-                    if (
-                        last_log_file is None
-                        or current_log != last_log_file
-                    ):
-                        if current_log.stat().st_mtime > metrics_glob_start:
-                            last_log_file = current_log
-                            self.logger.info(
-                                "tao_bench_wrapper: Found new server log: %s",
-                                last_log_file,
-                            )
-                            break  # Found it, start tailing
-                elif time.time() - metrics_glob_start > max_wait:
-                    self.logger.warning(
-                        "tao_bench_wrapper: No tao-bench-server-*.log found after %d seconds."
-                        " Tail thread exiting.",
-                        int(max_wait),
-                    )
-                    return
-            except Exception as exc:
-                self.logger.error(
-                    "tao_bench_wrapper: Error polling for server log: %s",
+                self.logger.warning(
+                    "tao_bench_wrapper: Could not create stable log file: %s",
                     exc,
                 )
-                if time.time() - metrics_glob_start > max_wait:
-                    return
-
-            if self._stop_tail_event.wait(poll_interval):
-                return  # Stop signal received
-
-        # Tail the log file
-        if last_log_file is None:
-            return
-
-        try:
-            last_pos = 0
-            tail_interval = 0.5  # seconds
-            while not self._stop_tail_event.is_set():
-                try:
-                    with open(last_log_file, "r", encoding="utf-8", errors="ignore") as f:
-                        f.seek(last_pos)
-                        lines = f.readlines()
-                        if lines:
-                            with open(active_log_path, "a", encoding="utf-8") as out_f:
-                                out_f.writelines(lines)
-                            last_pos = f.tell()
-                except OSError as exc:
-                    self.logger.debug(
-                        "tao_bench_wrapper: Error reading server log: %s",
-                        exc,
-                    )
-                
-                if self._stop_tail_event.wait(tail_interval):
-                    break  # Stop signal received
-        except Exception as exc:
-            self.logger.error(
-                "tao_bench_wrapper: Tail thread error: %s",
-                exc,
-            )
-
-    def post_run(self) -> None:
-        """Stop the daemon tail thread before calling base_wrapper's post_run()."""
-        if self._stop_tail_event is not None:
-            self._stop_tail_event.set()
-        if self._tail_thread is not None and self._tail_thread.is_alive():
-            self._tail_thread.join(timeout=5.0)
-        super().post_run()
+        return super().pre_run()
 
     # ------------------------------------------------------------------
     # SECTION E: job execution
@@ -311,9 +202,8 @@ class TaoBenchWrapper(BaseWrapper):
 
     def get_tmc_profile(self) -> Dict[str, Any]:
         """TaoBench collects EMON triggered by the server ready signal.
-        The daemon thread in pre_run() creates a stable symlink that TMC watches;
-        when the server writes the ready line to the log, TMC detects it and starts
-        EMON collection for the actual test window.
+        TMC watches the stable log file and detects the ready signal,
+        then starts EMON collection for the actual test window.
         """
         dcperf_root = self.config.get("dcperf_root")
         ramp_log = str(Path(dcperf_root) / "tao-bench-server-active.log") if dcperf_root else None
