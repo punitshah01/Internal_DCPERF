@@ -1,4 +1,4 @@
-"""Loads and persists DCPerf_SCRIPTS/config/dcperf_config.yaml.
+"""Loads and persists dcperf_scripts/config/dcperf_config.yaml.
 
 Centralizes every value that used to be hardcoded across the 5 legacy
 scripts (sep_path, emon_user, cores=288, db_client_ip, etc.). Missing

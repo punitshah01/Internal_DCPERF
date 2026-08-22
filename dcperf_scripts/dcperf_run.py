@@ -220,7 +220,7 @@ def _check_benchmark_installer(dcperf_root: str, workload: str, logger) -> bool:
 
     logger.error(
         "master_setup: DCPerf checkout is incomplete for %s: missing %s. "
-        "Update the DCPerf source checkout (not only DCPerf_SCRIPTS) before retrying.",
+        "Update the DCPerf source checkout (not only dcperf_scripts) before retrying.",
         workload, installer,
     )
     return False
@@ -500,7 +500,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-upload", action="store_true", help="With -ue, collect without uploading")
     parser.add_argument("--emon-user", default=None, help="TMC upload user (default: emon_user from config)")
     parser.add_argument("--experiment", type=str, default=None, help="Experiment name for grouping related sessions. Creates results/<workload>/<experiment>/session_NNN_<timestamp>/. If omitted, defaults to exp_YYYYMMDD.")
-    parser.add_argument("--results-dir", type=Path, default=None, help="Override default results base directory. Default: DCPerf_SCRIPTS/results/.")
+    parser.add_argument("--results-dir", type=Path, default=None, help="Override default results base directory. Default: dcperf_scripts/results/.")
     parser.add_argument("--force", "-f", action="store_true", help="Force reinstall: remove from dcperf_install_state.txt and pass -f to benchpress_cli.py install")
     return parser
 

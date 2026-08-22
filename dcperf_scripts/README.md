@@ -1,8 +1,8 @@
-# DCPerf_SCRIPTS
+# dcperf_scripts
 
 ## 1. Overview
 
-DCPerf_SCRIPTS orchestrates Facebook's [DCPerf](https://github.com/facebookresearch/DCPerf) benchmark suite (django_workload, feedsim, mediawiki, spark_standalone, tao_bench, video_transcode_bench, wdl_bench, health_check) with EMON/perf telemetry, OS tuning, core-scaling sweeps, and structured result capture layered on top of it. It does not replace DCPerf's own `benchpress_cli.py install/run` — every wrapper here calls that CLI under the hood and adds pre-flight checks, known-issue fixes, and machine-readable result artifacts around it. Wrapper structure (`BaseWrapper` execution flow, `results.json` schema, `Output Directory:` marker, `--experiment`/`--orch-run-id` flags) follows Intel PNPWLS conventions so these workloads can be registered with the same WLC orchestrator used for other PNPWLS runners.
+dcperf_scripts orchestrates Facebook's [DCPerf](https://github.com/facebookresearch/DCPerf) benchmark suite (django_workload, feedsim, mediawiki, spark_standalone, tao_bench, video_transcode_bench, wdl_bench, health_check) with EMON/perf telemetry, OS tuning, core-scaling sweeps, and structured result capture layered on top of it. It does not replace DCPerf's own `benchpress_cli.py install/run` — every wrapper here calls that CLI under the hood and adds pre-flight checks, known-issue fixes, and machine-readable result artifacts around it. Wrapper structure (`BaseWrapper` execution flow, `results.json` schema, `Output Directory:` marker, `--experiment`/`--orch-run-id` flags) follows Intel PNPWLS conventions so these workloads can be registered with the same WLC orchestrator used for other PNPWLS runners.
 
 Entry point: `dcperf_run.py`. Legacy pre-refactor scripts (`dj_perf.py`, `fs_perf.py`, `mw_perf.py`, `sweep.py`, `vt_script.py`) live under `legacy/` for reference only and are not used by the current automation.
 
@@ -94,11 +94,11 @@ git clone <your-repo-url>
 cd DCPerf
 
 # 2. Configure
-cp DCPerf_SCRIPTS/config/dcperf_config.yaml.example DCPerf_SCRIPTS/config/dcperf_config.yaml
-vim DCPerf_SCRIPTS/config/dcperf_config.yaml   # fill in null values you need
+cp dcperf_scripts/config/dcperf_config.yaml.example dcperf_scripts/config/dcperf_config.yaml
+vim dcperf_scripts/config/dcperf_config.yaml   # fill in null values you need
 
 # 3. Install all workloads
-cd DCPerf_SCRIPTS
+cd dcperf_scripts
 python dcperf_run.py --install-only --all
 
 # 4. Install one workload
@@ -160,7 +160,7 @@ python dcperf_run.py --run-only --all --results-dir /data/dcperf_results
 | `tao_bench_mode` | No | `standalone` | Default tao_bench `--mode` |
 | `java_path` | No | `null` | Auto-populated Java 8 path |
 | `clear_tmp` | No | `false` | Allow `clear_tmp()` to run `rm -rf /tmp/*` |
-| `results_base_dir` | No | `DCPerf_SCRIPTS/results` | Base output directory (overridable per-invocation with `--results-dir`) |
+| `results_base_dir` | No | `dcperf_scripts/results` | Base output directory (overridable per-invocation with `--results-dir`) |
 | `emon.sep_path` | Yes* | `null` | Structured EMON config, required by `-e`; falls back to flat `sep_path` if unset |
 | `emon.event_file` | No | `null` | Structured equivalent of `emon_event_file` |
 | `tmc.endpoint` | Yes* | `null` | Required by `-ue`; falls back to flat `emon_user` presence if unset |
