@@ -193,7 +193,7 @@ class TaoBenchWrapper(BaseWrapper):
         return {
             "ramp_string": "All slow threads are created and running, waiting for requests.",
             "ramp_timeout": warmup_time + 120,
-            "start": 0,
+            "start": warmup_time + 120,
             "end": self.args.test_time + 300,
         }
 
