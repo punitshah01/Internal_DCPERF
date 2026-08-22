@@ -28,6 +28,7 @@ from modules.dcperf_config_manager import detect_distro
 from modules.dcperf_core_scaler import get_online_cores, get_total_cores, scale_generator, set_core_count
 
 _CPU_FREQ_CHECK_MARKER = "// disabled: fails on server CPUs"
+_HHVM_STOP_TIMEOUT_MARKER = "// patched: extended post-SIGKILL wait for high-core-count systems"
 _HHVM_MARKER_PATH = Path("/usr/local/hphpi/legacy/bin/hhvm")
 _HHVM_URLS = {
     "ubuntu": "hhvm-3.30-multplatform-binary-ubuntu.tar.xz",
@@ -207,6 +208,7 @@ class MediaWikiWrapper(BaseWrapper):
 
     def pre_run(self) -> Dict[str, Any]:
         self.apply_mediawiki_patches()
+        self.patch_hhvm_stop_timeout()
         return super().pre_run()
 
     def apply_mediawiki_patches(self) -> bool:
@@ -249,6 +251,58 @@ class MediaWikiWrapper(BaseWrapper):
         try:
             patch_file.write_text(patched)
             self.logger.info("mediawiki_wrapper: patched %s (CheckCPUFreq disabled)", patch_file)
+            return True
+        except OSError as exc:
+            self.logger.error("mediawiki_wrapper: failed to patch %s: %s", patch_file, exc)
+            return False
+
+    def patch_hhvm_stop_timeout(self) -> bool:
+        """Patch oss-performance/base/HHVMDaemon.php to extend the post-SIGKILL
+        wait in stop() before it gives up with 'HHVM is unstoppable!'.
+
+        HHVMDaemon::stop() sends SIGKILL then only waits waitForStop(1, 0.1)
+        (0.1s) before raising a fatal invariant_violation. With
+        Server.ThreadCount set high (e.g. 268) across multiple HHVM
+        instances on high-core-count servers, the kernel can take longer
+        than 0.1s to tear down the process after SIGKILL, so this throws a
+        false-positive fatal error *after* the benchmark has already
+        completed -- aborting the run before oss-performance ever prints
+        its results. Extends the post-SIGKILL retry window; idempotent --
+        checks for the marker first.
+        """
+        dcperf_root = self.config.get("dcperf_root")
+        if not dcperf_root:
+            self.logger.error("mediawiki_wrapper: dcperf_root not configured, cannot patch HHVMDaemon.php")
+            return False
+
+        patch_file = Path(dcperf_root) / "oss-performance" / "base" / "HHVMDaemon.php"
+        if not patch_file.exists():
+            self.logger.warning("mediawiki_wrapper: %s not found, skipping HHVM stop-timeout patch", patch_file)
+            return True
+
+        text = patch_file.read_text()
+        if _HHVM_STOP_TIMEOUT_MARKER in text:
+            self.logger.info("mediawiki_wrapper: HHVM stop-timeout patch already applied, skipping")
+            return True
+
+        target = 'invariant($this->waitForStop(1, 0.1), "HHVM is unstoppable!");'
+        if target not in text:
+            self.logger.warning("mediawiki_wrapper: waitForStop(1, 0.1) call not found in %s, nothing to patch", patch_file)
+            return True
+
+        patched = text.replace(
+            target,
+            f'invariant($this->waitForStop(100, 0.1), "HHVM is unstoppable!"); {_HHVM_STOP_TIMEOUT_MARKER}',
+        )
+
+        self.logger.info("mediawiki_wrapper: patching post-SIGKILL wait in %s", patch_file)
+        if self.args.dry_run:
+            self.logger.info("mediawiki_wrapper: [dry-run] would extend waitForStop() window in HHVMDaemon::stop()")
+            return True
+
+        try:
+            patch_file.write_text(patched)
+            self.logger.info("mediawiki_wrapper: patched %s (post-SIGKILL wait extended to ~10s)", patch_file)
             return True
         except OSError as exc:
             self.logger.error("mediawiki_wrapper: failed to patch %s: %s", patch_file, exc)
