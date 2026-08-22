@@ -164,27 +164,10 @@ class TaoBenchWrapper(BaseWrapper):
     # ------------------------------------------------------------------
     # SECTION D: OS tuning (pre_run) -- delegated to dcperf_os_tuner.tune_tao_bench()
     # via BaseWrapper.pre_run()'s apply_all() routing on get_workload_name().
-    # Create stable log file for TMC ramp_string detection.
     # ------------------------------------------------------------------
 
     def pre_run(self) -> Dict[str, Any]:
-        """Apply the TaoBench OS tuning profile (tune_tao_bench, routed by base_wrapper).
-        Also create stable log file that benchpress will tail to.
-        """
-        dcperf_root = self.config.get("dcperf_root")
-        if dcperf_root and not self.args.dry_run:
-            try:
-                active_log_path = Path(dcperf_root) / "tao-bench-server-active.log"
-                active_log_path.touch(exist_ok=True)
-                self.logger.info(
-                    "tao_bench_wrapper: Created stable log file for ramp detection: %s",
-                    active_log_path,
-                )
-            except OSError as exc:
-                self.logger.warning(
-                    "tao_bench_wrapper: Could not create stable log file: %s",
-                    exc,
-                )
+        """Apply the TaoBench OS tuning profile (tune_tao_bench, routed by base_wrapper)."""
         return super().pre_run()
 
     # ------------------------------------------------------------------
@@ -201,16 +184,14 @@ class TaoBenchWrapper(BaseWrapper):
         return self.JOB_NAME_AUTOSCALE
 
     def get_tmc_profile(self) -> Dict[str, Any]:
-        """TaoBench collects EMON triggered by the server ready signal.
-        TMC watches the stable log file and detects the ready signal,
-        then starts EMON collection for the actual test window.
+        """TaoBench collects EMON using lead_time.
+        Wait out the warmup period before collecting, so EMON only spans
+        the actual measured test_time window.
         """
-        dcperf_root = self.config.get("dcperf_root")
-        ramp_log = str(Path(dcperf_root) / "tao-bench-server-active.log") if dcperf_root else None
+        warmup_time = max(5 * self.args.memsize, 1200)
         return {
-            "ramp_log": ramp_log,
-            "ramp_string": "All slow threads are created and running, waiting for requests.",
-            "ramp_timeout": max(5 * self.args.memsize, 1200) + 120,
+            "ramp_log": None,
+            "lead_time": warmup_time,
             "start": 0,
             "end": self.args.test_time + 60,
         }
