@@ -512,10 +512,13 @@ class BaseWrapper(ABC):
             and self._emon_output_file is not None
             and emon_cfg.get("post_process", True) is not False
         ):
-            self.emon_manager.process_emon(
-                str(self._emon_output_file),
-                str(self.result_manager.get_emon_processed_dir(self.run_dir)),
-            )
+            try:
+                self.emon_manager.process_emon(
+                    str(self._emon_output_file),
+                    str(self.result_manager.get_emon_processed_dir(self.run_dir)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning("base_wrapper: EMON post-processing skipped due to error: %s", exc)
 
     def _utilization_is_acceptable(self) -> bool:
         """Fail runs whose CPU utilization is far under the workload's target.

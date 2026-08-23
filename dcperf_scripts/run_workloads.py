@@ -23,6 +23,7 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -339,6 +340,70 @@ def validate_workloads(workloads: List[str]) -> None:
         sys.exit(1)
 
 
+def _find_latest_summary_json(min_mtime_epoch: float) -> Optional[Path]:
+    summary_candidates = sorted(
+        (SCRIPT_DIR / "results").glob("summary_*/run_summary.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for candidate in summary_candidates:
+        try:
+            if candidate.stat().st_mtime >= (min_mtime_epoch - 1):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _extract_workload_summary(summary_path: Optional[Path], workload: str) -> Dict[str, Any]:
+    if not summary_path or not summary_path.exists():
+        return {}
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        results = payload.get("results", [])
+        if not isinstance(results, list) or not results:
+            return {}
+        entry = next((row for row in results if row.get("workload") == workload), results[0])
+        if not isinstance(entry, dict):
+            return {}
+        return entry
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _render_final_table(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        return
+    headers = ["Workload", "Status", "Runs", "Primary KPI / Score", "Duration(s)", "Exit"]
+    table_rows: List[List[str]] = []
+    for row in rows:
+        table_rows.append(
+            [
+                str(row.get("workload", "")),
+                str(row.get("status", "UNKNOWN")),
+                str(row.get("runs", "")),
+                str(row.get("primary_kpi", "--")),
+                str(row.get("duration_sec", "")),
+                str(row.get("exit_code", "")),
+            ]
+        )
+
+    widths = [len(h) for h in headers]
+    for row in table_rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(cell))
+
+    def _fmt(cells: List[str]) -> str:
+        return " | ".join(cell.ljust(widths[idx]) for idx, cell in enumerate(cells))
+
+    bar = "-+-".join("-" * width for width in widths)
+    print(f"\n{_ANSI_CYAN}Run Summary Table{_ANSI_RESET}")
+    print(_fmt(headers))
+    print(bar)
+    for row in table_rows:
+        print(_fmt(row))
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -368,6 +433,7 @@ def main() -> int:
         return 1
 
     any_fail = False
+    workload_results: List[Dict[str, Any]] = []
     for idx, workload in enumerate(workloads, 1):
         cmd = build_workload_command(workload, settings)
         print(
@@ -377,10 +443,29 @@ def main() -> int:
 
         if settings["dry_run"]:
             print(f"  {_ANSI_YELLOW}(dry-run — skipping execution){_ANSI_RESET}\n")
+            workload_results.append(
+                {
+                    "workload": workload,
+                    "status": "DRYRUN",
+                    "runs": settings["iterations"],
+                    "primary_kpi": "--",
+                    "duration_sec": 0,
+                    "exit_code": 0,
+                }
+            )
             continue
 
+        launched_at = time.time()
         try:
             result = subprocess.run(cmd, check=False)
+            finished_at = time.time()
+            duration = int(finished_at - launched_at)
+            summary_path = _find_latest_summary_json(launched_at)
+            extracted = _extract_workload_summary(summary_path, VIDEO_TRANSCODE_VARIANT_MAP.get(workload, {}).get("workload", workload))
+            status = extracted.get("status") or ("PASS" if result.returncode == 0 else "FAIL")
+            runs = extracted.get("runs", settings["iterations"])
+            primary_kpi = extracted.get("primary_kpi", "--")
+
             if result.returncode != 0:
                 print(
                     f"  {_ANSI_YELLOW}[WARN] {workload} exited with code {result.returncode} — "
@@ -389,9 +474,30 @@ def main() -> int:
                 any_fail = True
             else:
                 print(f"  {_ANSI_GREEN}[OK] {workload} completed.{_ANSI_RESET}\n")
+
+            workload_results.append(
+                {
+                    "workload": workload,
+                    "status": status,
+                    "runs": runs,
+                    "primary_kpi": primary_kpi,
+                    "duration_sec": duration,
+                    "exit_code": result.returncode,
+                }
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"  [ERROR] Failed to launch {workload}: {exc}", file=sys.stderr)
             any_fail = True
+            workload_results.append(
+                {
+                    "workload": workload,
+                    "status": "FAIL",
+                    "runs": 0,
+                    "primary_kpi": "launcher error",
+                    "duration_sec": 0,
+                    "exit_code": 1,
+                }
+            )
 
         if idx < len(workloads):
             print(
@@ -400,8 +506,11 @@ def main() -> int:
             time.sleep(INTER_WORKLOAD_SLEEP_SECONDS)
 
     if settings["dry_run"]:
+        _render_final_table(workload_results)
         print(f"{_ANSI_CYAN}Dry-run complete. No workloads were executed.{_ANSI_RESET}")
         return 0
+
+    _render_final_table(workload_results)
 
     if any_fail:
         print(f"\n{_ANSI_YELLOW}One or more workloads reported failures.{_ANSI_RESET}")

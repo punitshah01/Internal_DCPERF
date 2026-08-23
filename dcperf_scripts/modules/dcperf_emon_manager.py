@@ -216,6 +216,12 @@ class EmonManager:
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         edp_bin = self.sep_path / "bin64" / "edp"
+        if not edp_bin.exists():
+            self.logger.warning(
+                "emon_manager: skipping EDP post-processing because %s is missing",
+                edp_bin,
+            )
+            return False
         cmd = [str(edp_bin), str(emon_dat), "-o", str(out_dir)]
 
         self.logger.info("emon_manager: process_emon: %s", " ".join(cmd))
@@ -227,6 +233,9 @@ class EmonManager:
             return True
         except subprocess.CalledProcessError as exc:
             self.logger.error("emon_manager: EDP processing failed: %s", exc.stderr)
+            return False
+        except OSError as exc:
+            self.logger.warning("emon_manager: unable to execute EDP (%s); skipping post-processing", exc)
             return False
 
     # ------------------------------------------------------------------
