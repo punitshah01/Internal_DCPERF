@@ -582,7 +582,10 @@ def _selected_workloads(args: argparse.Namespace) -> List[str]:
 
 
 def main() -> int:
-    args = build_arg_parser().parse_args()
+    # Keep master parser focused on orchestration flags while letting
+    # workload wrappers own workload-specific options (e.g. --instances,
+    # --mode, --runtime, --codecs, --tmc-alias).
+    args, passthrough_argv = build_arg_parser().parse_known_args()
     logger = get_logger("dcperf_master_setup", SCRIPT_DIR / "logs")
 
     config_manager = ConfigManager(SCRIPT_DIR / "config" / "dcperf_config.yaml", logger)
@@ -668,6 +671,10 @@ def main() -> int:
             extra_argv += ["--experiment", args.experiment]
         if args.runs is not None:
             extra_argv += ["--runs", str(args.runs)]
+
+        # Forward unknown args from the master CLI to the selected workload
+        # wrapper parser.
+        extra_argv.extend(passthrough_argv)
 
         result = _run_workload(workload, wrapper_cls, extra_argv)
         all_results.append(result)
