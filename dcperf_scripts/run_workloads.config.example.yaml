@@ -1,0 +1,68 @@
+# run_workloads.config.example.yaml
+#
+# Template config for run_workloads.py.
+# Copy to run_workloads.config.yaml and edit before running:
+#
+#   cp dcperf_scripts/run_workloads.config.example.yaml \
+#      dcperf_scripts/run_workloads.config.yaml
+#
+# This file is read exclusively by run_workloads.py.
+# Do not rename it — the script looks for run_workloads.config.yaml by default.
+
+# ---------------------------------------------------------------------------
+# Global settings
+# ---------------------------------------------------------------------------
+global:
+  # Run EMON telemetry collection alongside workloads.
+  # Equivalent to passing -e on the CLI.
+  no_emon: true
+
+  # Number of times to repeat each workload run.
+  iterations: 1
+
+  # Experiment name used to group results. Defaults to exp_YYYYMMDD if empty.
+  experiment_name: ""
+
+  # Prefix used when generating unique session names per workload.
+  # Format: <session_prefix>_<workload>_<YYYYMMDD_HHMMSS>
+  session_prefix: "run"
+
+  # Ordered list of workloads to run. Remove or comment out a workload to skip it.
+  # Supported values: mediawiki, feedsim, tao_bench, video_transcode_bench,
+  #                   django_workload, spark_standalone
+  workload_order:
+    - mediawiki
+    - feedsim
+    - tao_bench
+    - video_transcode_bench
+    - django_workload
+    - spark_standalone
+
+# ---------------------------------------------------------------------------
+# Workload-specific settings
+# ---------------------------------------------------------------------------
+workloads:
+
+  mediawiki:
+    # Number of HHVM/nginx instances (-R scale_out passed to benchpress).
+    instances: 4
+
+  feedsim:
+    # Number of FeedSim client instances.
+    instances: 2
+
+  tao_bench:
+    # Run mode: standalone (single machine, validated) or autoscale (multi-machine, experimental).
+    mode: standalone
+
+  video_transcode_bench:
+    # Encoding runtime budget: short (~5 min), medium (~20 min), or long (~60 min).
+    runtime: short
+
+  django_workload:
+    # Extra arguments forwarded verbatim to the django wrapper.
+    extra_args: ""
+
+  spark_standalone:
+    # Extra arguments forwarded verbatim to the spark wrapper.
+    extra_args: ""

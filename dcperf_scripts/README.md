@@ -2,9 +2,168 @@
 
 ## 1. Overview
 
-dcperf_scripts orchestrates Facebook's [DCPerf](https://github.com/facebookresearch/DCPerf) benchmark suite (django_workload, feedsim, mediawiki, spark_standalone, tao_bench, video_transcode_bench, wdl_bench, health_check) with EMON/perf telemetry, OS tuning, core-scaling sweeps, and structured result capture layered on top of it. It does not replace DCPerf's own `benchpress_cli.py install/run` — every wrapper here calls that CLI under the hood and adds pre-flight checks, known-issue fixes, and machine-readable result artifacts around it. Wrapper structure (`BaseWrapper` execution flow, `results.json` schema, `Output Directory:` marker, `--experiment`/`--orch-run-id` flags) follows Intel PNPWLS conventions so these workloads can be registered with the same WLC orchestrator used for other PNPWLS runners.
+dcperf_scripts orchestrates Facebook's [DCPerf](https://github.com/facebookresearch/DCPerf) benchmark suite (django_workload, feedsim, mediawiki, spark_standalone, tao_bench, video_transcode_bench, wdl_bench, health_check) with EMON/perf telemetry, OS tuning, core-scaling sweeps, and structured result capture layered on top of it. It does not replace DCPerf's own `benchpress_cli.py install/run` — every wrapper here calls that CLI under the hood and adds pre-flight checks, known-issue fixes, and machine-readable result artifacts around it.
 
-Entry point: `dcperf_run.py`. Legacy pre-refactor scripts (`dj_perf.py`, `fs_perf.py`, `mw_perf.py`, `sweep.py`, `vt_script.py`) live under `legacy/` for reference only and are not used by the current automation.
+**Scripts**
+| Script | Purpose |
+|---|---|
+| `dcperf_run.py` | Install + run individual workloads; EMON/TMC integration; result capture |
+| `run_workloads.py` | Master orchestrator — run multiple workloads back-to-back with one config file |
+
+Legacy pre-refactor scripts (`dj_perf.py`, `fs_perf.py`, `mw_perf.py`, `sweep.py`, `vt_script.py`) live under `legacy/` for reference only.
+
+---
+
+## run_workloads.py — Quick-start
+
+### 2. Requirements
+
+- Python 3.8+, `pyyaml` (`pip install pyyaml`), sudo access
+- Run the initial setup first so workloads are installed:
+  ```bash
+  python dcperf_run.py --install-only --all
+  ```
+
+### 3. Configuration
+
+`run_workloads.py` reads all settings from a YAML config file.  
+**Do not pass long flag lists on the command line** — edit the config instead.
+
+```bash
+# One-time setup: copy the example template
+cp dcperf_scripts/run_workloads.config.example.yaml \
+   dcperf_scripts/run_workloads.config.yaml
+
+# Edit your settings (iterations, instances, mode, experiment name, …)
+vim dcperf_scripts/run_workloads.config.yaml
+```
+
+Key config sections:
+
+| Section | Key | Description |
+|---|---|---|
+| `global` | `no_emon` | `true` to skip EMON, `false` to enable |
+| `global` | `iterations` | Runs per workload |
+| `global` | `experiment_name` | Groups results (default: `exp_YYYYMMDD`) |
+| `global` | `session_prefix` | Prefix for auto-generated session names |
+| `global` | `workload_order` | Ordered list of workloads to run |
+| `workloads.mediawiki` | `instances` | HHVM/nginx instance count (`-R{x}`) |
+| `workloads.feedsim` | `instances` | FeedSim client instances |
+| `workloads.tao_bench` | `mode` | `standalone` or `autoscale` |
+| `workloads.video_transcode_bench` | `runtime` | `short`, `medium`, or `long` |
+
+### 4. Usage
+
+```bash
+# Run all workloads (uses run_workloads.config.yaml)
+python dcperf_scripts/run_workloads.py
+
+# Run only selected workloads
+python dcperf_scripts/run_workloads.py --workload-list mediawiki,feedsim,tao_bench
+
+# Override a few settings without editing the config
+python dcperf_scripts/run_workloads.py --no-emon --iterations 3 --experiment weekly_run
+
+# Preview commands without executing
+python dcperf_scripts/run_workloads.py --dry-run
+
+# Use a different config file
+python dcperf_scripts/run_workloads.py --config /path/to/other_config.yaml
+```
+
+**CLI flags (overrides only — prefer config file for everything else)**
+
+| Flag | Description |
+|---|---|
+| `--config FILE` | Path to YAML config (default: `run_workloads.config.yaml`) |
+| `--workload-list W1,W2` | Comma-separated workload names |
+| `--no-emon` | Disable EMON collection |
+| `--iterations N` | Number of runs per workload |
+| `--experiment NAME` | Experiment name |
+| `--session-prefix PREFIX` | Session name prefix |
+| `--dry-run` | Print resolved commands, do not execute |
+
+### 5. Workloads
+
+#### mediawiki
+
+**Install**
+```bash
+python dcperf_run.py --install-only --workload mediawiki
+```
+**Run (via run_workloads.py)**  
+Set in `run_workloads.config.yaml`:
+```yaml
+workloads:
+  mediawiki:
+    instances: 4   # -R{x} passed to benchpress
+```
+**Supported flags (config)**
+- `instances` — HHVM/nginx instance count
+
+#### feedsim
+
+**Install**
+```bash
+python dcperf_run.py --install-only --workload feedsim
+```
+**Run (via run_workloads.py)**
+```yaml
+workloads:
+  feedsim:
+    instances: 2
+```
+**Supported flags (config)**
+- `instances` — number of FeedSim client instances
+
+#### tao_bench
+
+**Install**
+```bash
+python dcperf_run.py --install-only --workload tao_bench
+```
+**Run (via run_workloads.py)**
+```yaml
+workloads:
+  tao_bench:
+    mode: standalone   # or autoscale
+```
+**Supported flags (config)**
+- `mode` — `standalone` (single-machine, validated) or `autoscale` (multi-machine, experimental)
+
+#### video_transcode_bench
+
+**Install**
+```bash
+python dcperf_run.py --install-only --workload video_transcode_bench
+```
+**Run (via run_workloads.py)**
+```yaml
+workloads:
+  video_transcode_bench:
+    runtime: short   # short | medium | long
+```
+**Supported flags (config)**
+- `runtime` — encoding budget: `short` (~5 min), `medium` (~20 min), `long` (~60 min)
+
+#### django_workload
+
+**Install**
+```bash
+python dcperf_run.py --install-only --workload django_workload
+```
+**Run (via run_workloads.py)** — no workload-specific config keys required.
+
+#### spark_standalone
+
+**Install**
+```bash
+python dcperf_run.py --install-only --workload spark_standalone
+```
+**Run (via run_workloads.py)** — no workload-specific config keys required.  
+> Note: Spark requires a provisioned NVMe dataset path (`spark_data_path`) set in `config/dcperf_config.yaml`.
+
+---
 
 ## 2. Prerequisites
 
