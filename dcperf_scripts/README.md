@@ -7,10 +7,32 @@ dcperf_scripts orchestrates Facebook's [DCPerf](https://github.com/facebookresea
 **Scripts**
 | Script | Purpose |
 |---|---|
+| `dcperf.py` | Unified CLI entry point for run/check/tune/list/results/config |
 | `dcperf_run.py` | Install + run individual workloads; EMON/TMC integration; result capture |
 | `run_workloads.py` | Master orchestrator — run multiple workloads back-to-back with one config file |
 
 Legacy pre-refactor scripts (`dj_perf.py`, `fs_perf.py`, `mw_perf.py`, `sweep.py`, `vt_script.py`) live under `legacy/` for reference only.
+
+---
+
+## Unified CLI (recommended)
+
+```bash
+python dcperf_scripts/dcperf.py run --workload mediawiki --iterations 3 --experiment my_test
+python dcperf_scripts/dcperf.py run --all --dry-run
+python dcperf_scripts/dcperf.py run --workload tao_bench --emon --upload-tmc
+python dcperf_scripts/dcperf.py check
+python dcperf_scripts/dcperf.py tune
+python dcperf_scripts/dcperf.py list
+python dcperf_scripts/dcperf.py results --experiment my_test
+python dcperf_scripts/dcperf.py config --show
+python dcperf_scripts/dcperf.py config --validate
+```
+
+- Unified config file: `dcperf_scripts/config/dcperf_config.yaml`
+- Config schema: `dcperf_scripts/config/dcperf_config.schema.json`
+- Quickstart: `dcperf_scripts/docs/QUICKSTART.md`
+- Config reference: `dcperf_scripts/docs/CONFIG_REFERENCE.md`
 
 ---
 
@@ -535,4 +557,3 @@ cd <dcperf_root>
 ./benchpress_cli.py report score
 ./benchpress_cli.py report score --all
 ```
-

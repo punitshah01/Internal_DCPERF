@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DCPerf Unified Config",
+  "type": "object",
+  "required": ["global", "workloads", "emon", "tmc", "os_tuning", "scaling"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "required": ["experiment_name", "results_dir", "log_level", "dry_run"],
+      "properties": {
+        "experiment_name": { "type": "string", "minLength": 1 },
+        "results_dir": { "type": "string", "minLength": 1 },
+        "log_level": { "type": "string", "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] },
+        "dry_run": { "type": "boolean" }
+      }
+    },
+    "workloads": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "health_check",
+              "mediawiki",
+              "feedsim",
+              "tao_bench",
+              "video_transcode_bench",
+              "django_workload",
+              "spark_standalone",
+              "wdl_bench"
+            ]
+          },
+          "minItems": 1
+        },
+        "overrides": { "type": "object" }
+      }
+    },
+    "emon": {
+      "type": "object",
+      "required": ["enabled", "sep_path"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "sep_path": { "type": "string" },
+        "event_file": { "type": ["string", "null"] }
+      }
+    },
+    "tmc": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "upload": { "type": "boolean" },
+        "server_url": { "type": ["string", "null"] },
+        "credentials_file": { "type": ["string", "null"] },
+        "emon_user": { "type": ["string", "null"] }
+      }
+    },
+    "os_tuning": {
+      "type": "object",
+      "required": ["enabled", "thp", "drop_caches"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "thp": { "type": "string", "enum": ["never", "always", "madvise"] },
+        "numa_balancing": { "type": ["boolean", "null"] },
+        "drop_caches": { "type": "boolean" }
+      }
+    },
+    "scaling": {
+      "type": "object",
+      "required": ["enabled", "core_counts"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "core_counts": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 },
+          "minItems": 1
+        }
+      }
+    }
+  }
+}
