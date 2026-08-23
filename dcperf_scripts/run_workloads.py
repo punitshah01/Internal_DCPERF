@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -446,20 +448,37 @@ def _run_child_live(cmd: List[str], workload: str, verbose: bool) -> Dict[str, A
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        start_new_session=True,
     )
 
     emitted_count = 0
-    with open(log_path, "w", encoding="utf-8", errors="ignore") as log_fh:
-        assert process.stdout is not None
-        for raw_line in process.stdout:
-            log_fh.write(raw_line)
-            line = raw_line.rstrip("\n")
-            if verbose:
-                print(f"    [{workload}] {line}")
-                emitted_count += 1
-            elif _should_emit_compact_line(line):
-                print(f"    [{workload}] {line}")
-                emitted_count += 1
+    try:
+        with open(log_path, "w", encoding="utf-8", errors="ignore") as log_fh:
+            assert process.stdout is not None
+            for raw_line in process.stdout:
+                log_fh.write(raw_line)
+                line = raw_line.rstrip("\n")
+                if verbose:
+                    print(f"    [{workload}] {line}")
+                    emitted_count += 1
+                elif _should_emit_compact_line(line):
+                    print(f"    [{workload}] {line}")
+                    emitted_count += 1
+    except KeyboardInterrupt:
+        print(f"\n  {_ANSI_YELLOW}[WARN] Interrupted by user; stopping {workload}...{_ANSI_RESET}")
+        if process.poll() is None:
+            try:
+                if hasattr(os, "killpg"):
+                    os.killpg(process.pid, signal.SIGINT)
+                else:
+                    process.terminate()
+                process.wait(timeout=10)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        raise
 
     rc = process.wait()
     finished = time.time()
@@ -569,12 +588,31 @@ def main() -> int:
                     "exit_code": 1,
                 }
             )
+        except KeyboardInterrupt:
+            workload_results.append(
+                {
+                    "workload": workload,
+                    "status": "INTERRUPTED",
+                    "runs": 0,
+                    "primary_kpi": "user interrupted",
+                    "duration_sec": 0,
+                    "exit_code": 130,
+                }
+            )
+            print(f"\n{_ANSI_YELLOW}Run interrupted by user. Printing partial summary...{_ANSI_RESET}")
+            _render_final_table(workload_results)
+            return 130
 
         if idx < len(workloads):
             print(
                 f"  {_ANSI_CYAN}Sleeping {INTER_WORKLOAD_SLEEP_SECONDS}s before next workload...{_ANSI_RESET}\n"
             )
-            time.sleep(INTER_WORKLOAD_SLEEP_SECONDS)
+            try:
+                time.sleep(INTER_WORKLOAD_SLEEP_SECONDS)
+            except KeyboardInterrupt:
+                print(f"\n{_ANSI_YELLOW}Run interrupted during inter-workload sleep. Printing partial summary...{_ANSI_RESET}")
+                _render_final_table(workload_results)
+                return 130
 
     if settings["dry_run"]:
         _render_final_table(workload_results)

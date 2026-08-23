@@ -130,13 +130,33 @@ class EmonManager:
             return False
         self.logger.warning("emon_manager: attempting SEP driver reload")
         try:
-            subprocess.run(["sudo", str(rmmod_script)], check=False, capture_output=True, text=True)
-            ins = subprocess.run(["sudo", str(insmod_script)], check=False, capture_output=True, text=True)
+            # Use non-interactive sudo so this never blocks waiting for a
+            # password prompt inside automated runs.
+            rm = subprocess.run(
+                ["sudo", "-n", str(rmmod_script)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if rm.returncode != 0 and rm.stderr:
+                self.logger.warning("emon_manager: rmmod-sep returned %s: %s", rm.returncode, rm.stderr.strip())
+
+            ins = subprocess.run(
+                ["sudo", "-n", str(insmod_script)],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
             if ins.returncode != 0:
                 self.logger.warning("emon_manager: insmod-sep failed during reload: %s", ins.stderr)
                 return False
             time.sleep(1)
             return True
+        except subprocess.TimeoutExpired:
+            self.logger.warning("emon_manager: SEP driver reload timed out")
+            return False
         except OSError as exc:
             self.logger.warning("emon_manager: SEP driver reload failed: %s", exc)
             return False
