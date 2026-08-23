@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -61,6 +62,21 @@ _ANSI_YELLOW = "\033[33m"
 _ANSI_CYAN = "\033[36m"
 _ANSI_RESET = "\033[0m"
 INTER_WORKLOAD_SLEEP_SECONDS = 120
+
+LIVE_LOG_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"output directory:",
+        r"results report:",
+        r"finished running",
+        r"\|\s*error\s*\|",
+        r"\|\s*warning\s*\|",
+        r"\[warn\]|\[error\]|traceback|exception",
+        r"dcperf preflight check",
+        r"benchpress system_check\s*:\s*pass",
+        r"emon_manager:",
+    )
+]
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +217,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="Print resolved commands without executing",
+    )
+    parser.add_argument(
+        "--verbose-child-logs",
+        action="store_true",
+        help="Show full live stdout/stderr from each dcperf_run.py child process",
     )
     return parser
 
@@ -404,6 +425,56 @@ def _render_final_table(rows: List[Dict[str, Any]]) -> None:
         print(_fmt(row))
 
 
+def _should_emit_compact_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    return any(pattern.search(stripped) for pattern in LIVE_LOG_PATTERNS)
+
+
+def _run_child_live(cmd: List[str], workload: str, verbose: bool) -> Dict[str, Any]:
+    """Run child command with live output streaming and full log capture."""
+    logs_dir = SCRIPT_DIR / "logs" / "run_workloads"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = logs_dir / f"{workload}_{stamp}.log"
+
+    started = time.time()
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    emitted_count = 0
+    with open(log_path, "w", encoding="utf-8", errors="ignore") as log_fh:
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            log_fh.write(raw_line)
+            line = raw_line.rstrip("\n")
+            if verbose:
+                print(f"    [{workload}] {line}")
+                emitted_count += 1
+            elif _should_emit_compact_line(line):
+                print(f"    [{workload}] {line}")
+                emitted_count += 1
+
+    rc = process.wait()
+    finished = time.time()
+
+    if not verbose and emitted_count == 0:
+        print(f"    [{workload}] (workload produced no compact log lines; see full log)")
+
+    print(f"    [{workload}] Full log: {log_path}")
+    return {
+        "returncode": rc,
+        "duration_sec": int(finished - started),
+        "log_path": str(log_path),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -455,20 +526,20 @@ def main() -> int:
             )
             continue
 
-        launched_at = time.time()
         try:
-            result = subprocess.run(cmd, check=False)
-            finished_at = time.time()
-            duration = int(finished_at - launched_at)
+            launched_at = time.time()
+            run_meta = _run_child_live(cmd, workload, args.verbose_child_logs)
+            result_rc = int(run_meta["returncode"])
+            duration = int(run_meta["duration_sec"])
             summary_path = _find_latest_summary_json(launched_at)
             extracted = _extract_workload_summary(summary_path, VIDEO_TRANSCODE_VARIANT_MAP.get(workload, {}).get("workload", workload))
-            status = extracted.get("status") or ("PASS" if result.returncode == 0 else "FAIL")
+            status = extracted.get("status") or ("PASS" if result_rc == 0 else "FAIL")
             runs = extracted.get("runs", settings["iterations"])
             primary_kpi = extracted.get("primary_kpi", "--")
 
-            if result.returncode != 0:
+            if result_rc != 0:
                 print(
-                    f"  {_ANSI_YELLOW}[WARN] {workload} exited with code {result.returncode} — "
+                    f"  {_ANSI_YELLOW}[WARN] {workload} exited with code {result_rc} — "
                     f"continuing to next workload.{_ANSI_RESET}\n"
                 )
                 any_fail = True
@@ -482,7 +553,7 @@ def main() -> int:
                     "runs": runs,
                     "primary_kpi": primary_kpi,
                     "duration_sec": duration,
-                    "exit_code": result.returncode,
+                    "exit_code": result_rc,
                 }
             )
         except Exception as exc:  # noqa: BLE001
