@@ -130,7 +130,7 @@ def _check_command(args: argparse.Namespace, config: Dict[str, Any], logger) -> 
     if info.logical_cores <= 0:
         failures.append("logical core detection failed")
     if info.total_ram_gb <= 0:
-        failures.append("memory detection failed")
+        warnings.append("memory detection failed")
     if not info.has_internet:
         warnings.append("internet connectivity is unavailable")
 
