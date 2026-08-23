@@ -47,6 +47,12 @@ ALL_WORKLOADS: List[str] = [
     "django_workload",
     "spark_standalone",
 ]
+CODECS: List[str] = ["svt", "aom", "x264"]
+VIDEO_TRANSCODE_VARIANT_MAP: Dict[str, Dict[str, str]] = {
+    "video_transcode_bench_short": {"workload": "video_transcode_bench", "runtime": "short"},
+    "video_transcode_bench_medium": {"workload": "video_transcode_bench", "runtime": "medium"},
+    "video_transcode_bench_long": {"workload": "video_transcode_bench", "runtime": "long"},
+}
 
 _ANSI_GREEN = "\033[32m"
 _ANSI_YELLOW = "\033[33m"
@@ -256,8 +262,10 @@ def build_workload_command(workload: str, settings: Dict[str, Any]) -> List[str]
     wl_cfg = settings["workload_cfg"].get(workload, {}) or {}
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_name = f"{settings['session_prefix']}_{workload}_{ts}"
+    resolved_workload = VIDEO_TRANSCODE_VARIANT_MAP.get(workload, {}).get("workload", workload)
+    variant_runtime = VIDEO_TRANSCODE_VARIANT_MAP.get(workload, {}).get("runtime")
 
-    cmd: List[str] = [sys.executable, str(DCPERF_RUN), "--run-only", "--workload", workload]
+    cmd: List[str] = [sys.executable, str(DCPERF_RUN), "--run-only", "--workload", resolved_workload]
 
     if settings["dry_run"]:
         cmd.append("--dry-run")
@@ -289,10 +297,12 @@ def build_workload_command(workload: str, settings: Dict[str, Any]) -> List[str]
         if mode:
             cmd += ["--mode", str(mode)]
 
-    elif workload == "video_transcode_bench":
-        runtime = wl_cfg.get("runtime")
+    elif resolved_workload == "video_transcode_bench":
+        runtime = wl_cfg.get("runtime") or variant_runtime
         if runtime:
             cmd += ["--runtime", str(runtime)]
+        if workload in VIDEO_TRANSCODE_VARIANT_MAP:
+            cmd += ["--codecs", ",".join(CODECS)]
 
     # Generic extra_args (forwarded verbatim if workload supports them)
     extra_args_raw: Optional[str] = wl_cfg.get("extra_args")
@@ -312,11 +322,16 @@ def build_workload_command(workload: str, settings: Dict[str, Any]) -> List[str]
 # ---------------------------------------------------------------------------
 
 def validate_workloads(workloads: List[str]) -> None:
-    unknown = [w for w in workloads if w not in ALL_WORKLOADS]
+    unknown = [
+        w
+        for w in workloads
+        if VIDEO_TRANSCODE_VARIANT_MAP.get(w, {}).get("workload", w) not in ALL_WORKLOADS
+    ]
     if unknown:
+        supported = ALL_WORKLOADS + list(VIDEO_TRANSCODE_VARIANT_MAP.keys())
         print(
             f"[ERROR] Unknown workload(s): {', '.join(unknown)}\n"
-            f"  Supported: {', '.join(ALL_WORKLOADS)}",
+            f"  Supported: {', '.join(supported)}",
             file=sys.stderr,
         )
         sys.exit(1)
