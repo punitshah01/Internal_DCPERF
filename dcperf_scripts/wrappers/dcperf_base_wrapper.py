@@ -207,6 +207,14 @@ class BaseWrapper(ABC):
         """
         return True
 
+    def is_install_satisfied(self) -> bool:
+        """Return True when wrapper-managed install dependencies/data are present.
+
+        This is intentionally read-only. Subclasses override it with cheap
+        artifact checks so dcperf_run.py can skip unnecessary reinstall work.
+        """
+        return True
+
     def collect_metadata(self) -> Dict[str, Any]:
         """Minimal system metadata snapshot (hostname, cpu, cores, kernel, os, timestamp)."""
         return {

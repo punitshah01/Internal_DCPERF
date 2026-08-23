@@ -71,6 +71,9 @@ class VideoWrapper(BaseWrapper):
             self.config["video_dataset_path"] = self.config_manager.require("video_dataset_path")
         return self.prepare_dataset()
 
+    def is_install_satisfied(self) -> bool:
+        return self._dataset_ready()
+
     def pre_run(self) -> Dict[str, Any]:
         if not self._dataset_ready():
             self.logger.error(

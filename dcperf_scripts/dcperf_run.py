@@ -70,6 +70,17 @@ _shutdown_requested = False
 _MIN_PYTHON = (3, 8)
 _MIN_FREE_DISK_GB = 100
 
+_WORKLOAD_INSTALL_SCRIPTS: Dict[str, str] = {
+    "health_check": "./packages/health_check/install_health_check.sh",
+    "django_workload": "./packages/django_workload/install_django_workload.sh",
+    "feedsim": "./packages/feedsim/install_feedsim.sh",
+    "mediawiki": "./packages/mediawiki/install_oss_performance_mediawiki.sh",
+    "spark_standalone": "./packages/spark_standalone/install_spark_standalone.sh",
+    "tao_bench": "./packages/tao_bench/install_tao_bench.sh",
+    "video_transcode_bench": "./packages/video_transcode_bench/install_video_transcode_bench.sh",
+    "wdl_bench": "./packages/wdl_bench/install_wdl_bench.sh",
+}
+
 _ANSI_GREEN = "\033[32m"
 _ANSI_YELLOW = "\033[33m"
 _ANSI_RED = "\033[31m"
@@ -104,6 +115,47 @@ def _unmark_installed(job_name: str) -> None:
     _INSTALL_MARKER_FILE.write_text("\n".join(sorted(installed)) + "\n" if installed else "")
 
 
+def _read_benchpress_installs(dcperf_root: str) -> List[str]:
+    marker = Path(dcperf_root) / "benchmark_installs.txt"
+    if not marker.exists():
+        return []
+    return [line.strip() for line in marker.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+
+
+def _install_script_for_workload(workload: str) -> Optional[str]:
+    return _WORKLOAD_INSTALL_SCRIPTS.get(workload)
+
+
+def _benchpress_install_recorded(dcperf_root: str, install_script: Optional[str]) -> bool:
+    if not install_script:
+        return False
+    normalized = install_script.lstrip("./")
+    for recorded in _read_benchpress_installs(dcperf_root):
+        if recorded == install_script or recorded.lstrip("./") == normalized:
+            return True
+    return False
+
+
+def _workload_install_satisfied(
+    workload: str,
+    job_name: str,
+    install_script: Optional[str],
+    dcperf_root: str,
+    wrapper: Any,
+    logger,
+) -> bool:
+    marker_installed = job_name in _read_installed_jobs()
+    benchpress_installed = _benchpress_install_recorded(dcperf_root, install_script)
+    if not (marker_installed or benchpress_installed):
+        return False
+
+    if not wrapper.is_install_satisfied():
+        logger.info("master_setup: %s install marker found but dependency/data check is not satisfied", workload)
+        return False
+
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Per-OS prerequisite installation (official README "Install Prerequisites")
 # ---------------------------------------------------------------------------
@@ -132,15 +184,16 @@ _OS_PREREQ_COMMANDS: Dict[str, List[List[str]]] = {
 }
 
 
-def install_os_prerequisites(logger, dry_run: bool, resume: bool) -> bool:
+def install_os_prerequisites(logger, dry_run: bool, resume: bool, force: bool = False) -> bool:
     """Run the official per-OS prerequisite install sequence (README "Install
     Prerequisites" section) for CentOS Stream 8/9 or Ubuntu 22.04.
 
     Idempotent across master_setup invocations via a marker file, same
     pattern as _read_installed_jobs()/_mark_installed().
     """
-    if resume and _OS_PREREQS_MARKER_FILE.exists():
-        logger.info("master_setup: OS prerequisites already installed, skipping (--resume)")
+    if not force and _OS_PREREQS_MARKER_FILE.exists():
+        reason = "--resume" if resume else "install marker present"
+        logger.info("master_setup: OS prerequisites already installed, skipping (%s)", reason)
         return True
 
     distro = detect_distro()
@@ -207,14 +260,11 @@ def _check_benchmark_installer(dcperf_root: str, workload: str, logger) -> bool:
         logger.error("master_setup: benchmarks.yml is missing: %s", benchmark_file)
         return False
 
-    expected = {
-        "health_check": "packages/health_check/install_health_check.sh",
-        "mediawiki": "packages/mediawiki/install_oss_performance_mediawiki.sh",
-    }.get(workload)
+    expected = _install_script_for_workload(workload)
     if expected is None:
         return True
 
-    installer = Path(dcperf_root) / expected
+    installer = Path(dcperf_root) / expected.lstrip("./")
     if installer.exists():
         return True
 
@@ -413,14 +463,7 @@ def run_preflight_checks(config: Dict[str, Any], logger, dry_run: bool) -> bool:
 
 def _install_workload(workload: str, wrapper_cls: Type[Any], config: Dict[str, Any], logger, dry_run: bool, resume: bool, force: bool = False) -> bool:
     job_name = wrapper_cls.JOB_NAME
-
-    if force:
-        logger.info("master_setup: Force reinstalling %s", workload)
-        if not dry_run:
-            _unmark_installed(job_name)
-    elif resume and job_name in _read_installed_jobs():
-        logger.info("master_setup: %s already installed, skipping (--resume)", workload)
-        return True
+    install_script = _install_script_for_workload(workload)
 
     dcperf_root = config.get("dcperf_root")
     if not dcperf_root:
@@ -430,9 +473,24 @@ def _install_workload(workload: str, wrapper_cls: Type[Any], config: Dict[str, A
     if not _check_benchmark_installer(dcperf_root, workload, logger):
         return False
 
+    hook_argv = ["--dry-run"] if dry_run else []
+    if force:
+        logger.info("master_setup: Force reinstalling %s", workload)
+        if not dry_run:
+            _unmark_installed(job_name)
+    else:
+        try:
+            check_wrapper = wrapper_cls(hook_argv)
+            if _workload_install_satisfied(workload, job_name, install_script, dcperf_root, check_wrapper, logger):
+                logger.info("master_setup: %s already installed and dependency/data checks passed, skipping", workload)
+                if not dry_run:
+                    _mark_installed(job_name)
+                return True
+        except Exception as exc:
+            logger.warning("master_setup: install satisfaction check failed for %s: %s", workload, exc)
+
     # Workload-specific pre-install patches/prerequisite checks (FeedSim
     # gengetopt fallback, TaoBench packages, Spark prerequisite sequence...).
-    hook_argv = ["--dry-run"] if dry_run else []
     if force:
         hook_argv.append("--force")
     try:
@@ -555,7 +613,7 @@ def main() -> int:
         _install_known_hosts(config, logger, args.dry_run)
 
     if do_install:
-        if not install_os_prerequisites(logger, args.dry_run, args.resume):
+        if not install_os_prerequisites(logger, args.dry_run, args.resume, args.force):
             logger.error("master_setup: OS prerequisite installation failed")
             return 1
 

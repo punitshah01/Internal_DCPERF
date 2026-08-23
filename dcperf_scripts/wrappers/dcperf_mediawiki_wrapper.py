@@ -80,6 +80,11 @@ class MediaWikiWrapper(BaseWrapper):
         ok = self._copy_nginx_tarball() and ok
         return ok
 
+    def is_install_satisfied(self) -> bool:
+        nginx_bin = Path("/usr/local/nginx-1.22/sbin/nginx")
+        nginx_tarball = Path("/usr/local/nginx-1.22.tar.gz")
+        return _HHVM_MARKER_PATH.exists() and (nginx_bin.exists() or nginx_tarball.exists())
+
     def _run_privileged(self, cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
         return subprocess.run(cmd, check=check, capture_output=True, text=True)
 

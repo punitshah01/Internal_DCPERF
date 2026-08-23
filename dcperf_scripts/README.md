@@ -264,6 +264,8 @@ python dcperf_run.py --install-only --all
 python dcperf_run.py --install-only --workload tao_bench
 ```
 
+Install is idempotent by default. `dcperf_run.py` skips OS prerequisite installation when `os_prereqs_installed.txt` is present, and skips each workload when either DCPerf's `benchmark_installs.txt` or `dcperf_install_state.txt` says it is installed and the wrapper's read-only dependency/data check passes. Use `--force` to bypass those checks and reinstall.
+
 ## 4. Running
 
 ```bash
