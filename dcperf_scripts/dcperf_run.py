@@ -499,6 +499,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("-ue", "--upload-emon", action="store_true", help="Collect EMON and upload to TMC for all selected workloads (implies -e)")
     parser.add_argument("--no-upload", action="store_true", help="With -ue, collect without uploading")
     parser.add_argument("--emon-user", default=None, help="TMC upload user (default: emon_user from config)")
+    parser.add_argument("--socket-view", "-sv", action="store_true", help="Enable EMON socket view")
+    parser.add_argument("--core-view", "-cv", action="store_true", help="Enable EMON core view (default)")
+    parser.add_argument("--uncore-view", "-uv", action="store_true", help="Enable EMON uncore view")
+    parser.add_argument("--detailed-view", "-dv", action="store_true", help="Enable EMON detailed/thread view")
+    parser.add_argument("--emon-views", "-w", default=None, help="TMC views, e.g. core,uncore")
     parser.add_argument("--experiment", type=str, default=None, help="Experiment name for grouping related sessions. Creates results/<workload>/<experiment>/session_NNN_<timestamp>/. If omitted, defaults to exp_YYYYMMDD.")
     parser.add_argument("--results-dir", type=Path, default=None, help="Override default results base directory. Default: dcperf_scripts/results/.")
     parser.add_argument("--force", "-f", action="store_true", help="Force reinstall: remove from dcperf_install_state.txt and pass -f to benchpress_cli.py install")
@@ -526,11 +531,16 @@ def main() -> int:
 
     if args.upload_emon:
         args.emon = True
-    if args.upload_emon and not config.get("tmc", {}).get("endpoint") and not config.get("emon_user"):
-        logger.error("-ue requires tmc.endpoint (or emon_user) in dcperf_config.yaml. Falling back to local EMON only.")
+    sep_path = config.get("sep_path") or config.get("emon", {}).get("sep_path")
+    if args.upload_emon and not config.get("emon_user"):
+        logger.error("-ue requires emon_user in dcperf_config.yaml. Falling back to local EMON only.")
         args.upload_emon = False
-    if args.emon and not config.get("emon", {}).get("sep_path") and not config.get("sep_path"):
-        logger.error("-e requires emon.sep_path in dcperf_config.yaml. Skipping EMON collection.")
+    if args.emon and not sep_path:
+        logger.error("-e requires sep_path or emon.sep_path in dcperf_config.yaml. Skipping EMON collection.")
+        args.emon = False
+        args.upload_emon = False
+    elif args.emon and not (Path(str(sep_path)) / "sep_vars.sh").exists():
+        logger.error("-e requires %s/sep_vars.sh. Skipping EMON collection.", sep_path)
         args.emon = False
         args.upload_emon = False
 
@@ -585,6 +595,16 @@ def main() -> int:
             extra_argv.append("--no-upload")
         if args.emon_user:
             extra_argv += ["--emon-user", args.emon_user]
+        if args.socket_view:
+            extra_argv.append("--socket-view")
+        if args.core_view:
+            extra_argv.append("--core-view")
+        if args.uncore_view:
+            extra_argv.append("--uncore-view")
+        if args.detailed_view:
+            extra_argv.append("--detailed-view")
+        if args.emon_views:
+            extra_argv += ["--emon-views", args.emon_views]
         if args.experiment:
             extra_argv += ["--experiment", args.experiment]
 

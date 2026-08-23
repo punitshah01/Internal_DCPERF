@@ -74,7 +74,7 @@ class ConfigManager:
             if root:
                 self._config["results_base_dir"] = str(Path(__file__).resolve().parent.parent / "results")
 
-        derived_changed = False
+        derived_changed = self._normalize_telemetry_config()
         if not self._config.get("emon_user"):
             self._config["emon_user"] = "pshah"
             self.logger.info("config_manager: defaulted emon_user=pshah")
@@ -84,6 +84,7 @@ class ConfigManager:
         detected = self._discover_emon_event_file(self._config.get("sep_path"))
         if detected and not event_file:
             self._config["emon_event_file"] = str(detected)
+            self._config.setdefault("emon", {})["event_file"] = str(detected)
             self.logger.info("config_manager: auto-detected emon_event_file=%s", detected)
             derived_changed = True
         elif detected and Path(event_file).name != Path(detected).name:
@@ -95,6 +96,7 @@ class ConfigManager:
                 event_file, detected,
             )
             self._config["emon_event_file"] = str(detected)
+            self._config.setdefault("emon", {})["event_file"] = str(detected)
             derived_changed = True
 
         if not self._config.get("video_dataset_path") and self._config.get("dcperf_root"):
@@ -112,6 +114,44 @@ class ConfigManager:
             self.save()
 
         return self._config
+
+    def _normalize_telemetry_config(self) -> bool:
+        """Keep legacy flat keys and structured EMON/TMC keys in sync."""
+        changed = False
+        emon_cfg = self._config.setdefault("emon", {})
+        tmc_cfg = self._config.setdefault("tmc", {})
+
+        sep_path = self._config.get("sep_path") or emon_cfg.get("sep_path")
+        if not sep_path and Path("/opt/intel/sep/sep_vars.sh").exists():
+            sep_path = "/opt/intel/sep"
+            self.logger.info("config_manager: defaulted sep_path=%s", sep_path)
+        if sep_path:
+            if self._config.get("sep_path") != sep_path:
+                self._config["sep_path"] = sep_path
+                changed = True
+            if emon_cfg.get("sep_path") != sep_path:
+                emon_cfg["sep_path"] = sep_path
+                changed = True
+
+        event_file = self._config.get("emon_event_file") or emon_cfg.get("event_file")
+        if event_file:
+            if self._config.get("emon_event_file") != event_file:
+                self._config["emon_event_file"] = event_file
+                changed = True
+            if emon_cfg.get("event_file") != event_file:
+                emon_cfg["event_file"] = event_file
+                changed = True
+
+        emon_user = self._config.get("emon_user") or tmc_cfg.get("emon_user")
+        if emon_user:
+            if self._config.get("emon_user") != emon_user:
+                self._config["emon_user"] = emon_user
+                changed = True
+            if tmc_cfg.get("emon_user") != emon_user:
+                tmc_cfg["emon_user"] = emon_user
+                changed = True
+
+        return changed
 
     # (vendor, family, model) -> event-file alias, keyed by CPUID rather than
     # any OS/kernel string, which never carries the platform codename.
@@ -158,8 +198,9 @@ class ConfigManager:
         """
         if not sep_path:
             return None
-        edp_dir = Path(sep_path) / "config" / "edp"
-        if not edp_dir.exists():
+        sep_root = Path(sep_path)
+        search_dirs = [sep_root / "config" / "edp", sep_root]
+        if not any(path.exists() for path in search_dirs):
             return None
 
         vendor, family, model = self._read_cpu_identity()
@@ -176,12 +217,17 @@ class ConfigManager:
             )
             return None
 
-        candidates = sorted(edp_dir.glob("*server*events*.txt"))
+        candidates = sorted(
+            candidate
+            for search_dir in search_dirs
+            if search_dir.exists()
+            for candidate in search_dir.glob("*server*events*.txt")
+        )
         matching = [path for path in candidates if alias in path.name.lower().replace("_", "")]
         if not matching:
             self.logger.warning(
                 "config_manager: no %s event file under %s; set emon_event_file manually",
-                alias, edp_dir,
+                alias, ", ".join(str(path) for path in search_dirs),
             )
             return None
 

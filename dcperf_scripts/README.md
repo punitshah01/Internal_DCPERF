@@ -222,7 +222,7 @@ dnf config-manager --set-enabled crb
 - Install Intel VTune or SEP separately (not distributed with this repo).
 - Default expected path: `/opt/intel/sep`
 - Override in `config/dcperf_config.yaml`: `sep_path`
-- PNPWLS provides the supported setup flow in `C:/repos/pnpwls/setup/setup_emon.sh`. Copy that script/repository to the SUT, set `emon_setup_script` if you want to track its location, and run it before enabling `--emon`. It installs SEP/pyedp and the telemetry client (`tmc`). After SEP is installed, ConfigManager automatically selects a platform-matching `*server*events*.txt` file from `/opt/intel/sep/config/edp`, falling back to the first private/server event file.
+- PNPWLS provides the supported setup flow in `C:/repos/pnpwls/setup/setup_emon.sh`. Copy that script/repository to the SUT, set `emon_setup_script` if you want to track its location, and run it before enabling `--emon`. It installs SEP/pyedp and the telemetry client (`tmc`). After SEP is installed, ConfigManager automatically selects a platform-matching `*server*events*.txt` file from `/opt/intel/sep/config/edp` or `/opt/intel/sep`, falling back to the first private/server event file.
 
 **Two telemetry modes:**
 
@@ -231,7 +231,7 @@ dnf config-manager --set-enabled crb
 | Local EMON | `-e` / `--emon` | `emon -collect-edp` runs alongside the workload; raw `emon.dat` plus local EDP output stay in the run directory under `emon/emon_raw/` and `emon/emon_processed/`. Nothing is uploaded. |
 | TMC upload | `-ue` / `--upload-emon` | Implies `-e`. The workload runs *under* `tmc`, which handles ramp detection, the EMON collection window, and (unless `--no-upload`) uploads the session as `emon_user`/`tmc.emon_user`. This reproduces the pre-automation `*_perf.sh` behaviour. `emon/tmc_upload.log` records the resulting trace location. |
 
-`--tmc` has been removed — use `-ue`/`--upload-emon` instead. Missing prerequisites downgrade gracefully: `-ue` without `tmc.endpoint`/`emon_user` configured falls back to local-only EMON (`-e`); `-e` without `emon.sep_path`/`sep_path` configured skips telemetry entirely, logging an error either way instead of failing the run.
+`--tmc` has been removed — use `-ue`/`--upload-emon` instead. Missing prerequisites downgrade gracefully: `-ue` without `emon_user`/`tmc.emon_user` configured falls back to local-only EMON (`-e`); `-e` without a usable `emon.sep_path`/`sep_path` and `sep_vars.sh` skips telemetry entirely, logging an error either way instead of failing the run.
 
 Each wrapper supplies its baseline TMC profile (ramp string, ramp log, `-S`/`-E` window, views, `-Z`/`-G`/`-T`) via `get_tmc_profile()`, taken from the corresponding `mw_perf.sh` / `dj_perf.sh` / `fs_perf.sh` / `sweep.sh` / `tao_perf.sh` / `vt_script.sh`. Any of it can be overridden on the CLI with `-S`, `-E`, `-w`, `-Z`, `-G`, `-T`, `-rt`, `-a`, `-x`.
 
@@ -322,7 +322,7 @@ python dcperf_run.py --run-only --all --results-dir /data/dcperf_results
 | `results_base_dir` | No | `dcperf_scripts/results` | Base output directory (overridable per-invocation with `--results-dir`) |
 | `emon.sep_path` | Yes* | `null` | Structured EMON config, required by `-e`; falls back to flat `sep_path` if unset |
 | `emon.event_file` | No | `null` | Structured equivalent of `emon_event_file` |
-| `tmc.endpoint` | Yes* | `null` | Required by `-ue`; falls back to flat `emon_user` presence if unset |
+| `tmc.endpoint` | No | `null` | Optional TMC endpoint override, when needed by the local TMC installation |
 | `tmc.emon_user` | Yes* | `null` | Structured equivalent of `emon_user`, used for TMC upload |
 | `tmc.upload_timeout` | No | `300` | Seconds before a TMC upload is considered failed |
 | `tmc.project_id` | No | `null` | Optional TMC session group/project tag |
@@ -424,7 +424,7 @@ A `summary_<timestamp>/run_summary.json` + `run_summary.txt` is written once per
 - Enable with `-e`/`--emon` (local only) or `-ue`/`--upload-emon` (local + TMC upload, implies `-e`) on any wrapper or on `dcperf_run.py`. `--tmc` no longer exists.
 - Event file is platform-specific — set `emon.event_file` (or the legacy `emon_event_file`) in `config/dcperf_config.yaml` to the correct `<sep_path>/config/edp/<platform>_server_events*.txt`.
 - Raw output goes to `results/<workload>/<experiment>/session_<NNN>_<timestamp>/emon/emon_raw/`; processed EDP summaries go to `emon/emon_processed/` via `dcperf_emon_manager.process_emon()`; `-ue` additionally writes `emon/tmc_upload.log`.
-- View selection: `--core-view/-cv`, `--uncore-view/-uv`, `--detailed-view/-dv` (socket view is always included).
+- View selection defaults to core view. Add `--socket-view/-sv`, `--uncore-view/-uv`, or `--detailed-view/-dv` for additional views, or pass `--emon-views/-w` to provide an explicit TMC view list.
 
 ## 9. Troubleshooting
 

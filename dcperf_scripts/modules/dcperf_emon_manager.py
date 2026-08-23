@@ -68,8 +68,10 @@ class EmonManager:
         self.config = config
         self.logger = logger
         self.dry_run = dry_run
-        self.sep_path = Path(config["sep_path"]) if config.get("sep_path") else None
-        self.event_file = config.get("emon_event_file")
+        emon_cfg = config.get("emon") or {}
+        sep_path = config.get("sep_path") or emon_cfg.get("sep_path")
+        self.sep_path = Path(sep_path) if sep_path else None
+        self.event_file = config.get("emon_event_file") or emon_cfg.get("event_file")
 
     # ------------------------------------------------------------------
     # Availability / driver management
@@ -237,9 +239,9 @@ class EmonManager:
         uncore_view: bool = False,
         detailed_view: bool = False,
     ) -> List[str]:
-        """Return the ``-w`` view list for the emon CLI, socket view always included."""
-        views = ["socket"]
-        if core_view:
+        """Return the EMON view list, with core view enabled by default."""
+        views = ["core"]
+        if core_view and "core" not in views:
             views.append("core")
         if uncore_view:
             views.append("uncore")

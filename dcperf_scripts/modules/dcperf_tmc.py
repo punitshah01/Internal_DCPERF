@@ -86,7 +86,7 @@ class TmcRunner:
         if verbose:
             cmd.append("-v")
 
-        user = user or self.config.get("emon_user")
+        user = user or self.config.get("emon_user") or (self.config.get("tmc") or {}).get("emon_user")
         if upload and not user:
             raise ValueError("tmc upload requested but emon_user is not set")
         if user:
@@ -108,7 +108,7 @@ class TmcRunner:
         if tools:
             cmd += ["-T", tools]
 
-        event_file = event_file or self.config.get("emon_event_file")
+        event_file = event_file or self.config.get("emon_event_file") or (self.config.get("emon") or {}).get("event_file")
         if event_file:
             cmd += ["-e", str(event_file)]
         if group:

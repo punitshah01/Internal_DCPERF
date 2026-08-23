@@ -90,6 +90,7 @@ class BaseWrapper(ABC):
             if getattr(self.args, "core_scaling", False)
             else None
         )
+        self._emon_output_file: Optional[Path] = None
         self._emon_process: Optional[subprocess.Popen] = None
         self._rows: List[Dict[str, Any]] = []
         self.cpu_monitor: Optional[CpuMonitor] = None
@@ -132,7 +133,8 @@ class BaseWrapper(ABC):
         parser = argparse.ArgumentParser(description=f"{cls.__name__} DCPerf wrapper")
         parser.add_argument("--dry-run", "-dr", action="store_true", help="Show commands without executing")
         parser.add_argument("--emon", "-e", action="store_true", help="Enable EMON telemetry collection")
-        parser.add_argument("--core-view", "-cv", action="store_true", help="Enable EMON core view")
+        parser.add_argument("--socket-view", "-sv", action="store_true", help="Enable EMON socket view")
+        parser.add_argument("--core-view", "-cv", action="store_true", help="Enable EMON core view (default)")
         parser.add_argument("--uncore-view", "-uv", action="store_true", help="Enable EMON uncore view")
         parser.add_argument("--detailed-view", "-dv", action="store_true", help="Enable EMON detailed/thread view")
         parser.add_argument("--experiment", default="", help="Experiment name injected by WLC (default: '')")
@@ -165,14 +167,17 @@ class BaseWrapper(ABC):
         config needed for the requested telemetry level is missing."""
         if self.args.upload_emon:
             self.args.emon = True
-        if self.args.upload_emon and not (self.config.get("tmc") or {}).get("endpoint") and not self.config.get("emon_user"):
-            self.logger.error(
-                "base_wrapper: -ue requires tmc.endpoint (or emon_user) in dcperf_config.yaml. "
-                "Falling back to local EMON only."
-            )
+        sep_path = self.config.get("sep_path") or (self.config.get("emon") or {}).get("sep_path")
+        if self.args.upload_emon and not self.config.get("emon_user"):
+            self.logger.error("base_wrapper: -ue requires emon_user in dcperf_config.yaml. Falling back to local EMON only.")
             self.args.upload_emon = False
-        if self.args.emon and not ((self.config.get("emon") or {}).get("sep_path") or self.config.get("sep_path")):
-            self.logger.error("base_wrapper: -e requires emon.sep_path in dcperf_config.yaml. Skipping EMON collection.")
+        if self.args.emon and not sep_path:
+            self.logger.error("base_wrapper: -e requires sep_path or emon.sep_path in dcperf_config.yaml. Skipping EMON collection.")
+            self.args.emon = False
+            self.args.upload_emon = False
+            return
+        if self.args.emon and not (Path(str(sep_path)) / "sep_vars.sh").exists():
+            self.logger.error("base_wrapper: -e requires %s/sep_vars.sh. Skipping EMON collection.", sep_path)
             self.args.emon = False
             self.args.upload_emon = False
 
@@ -232,6 +237,7 @@ class BaseWrapper(ABC):
         if self.args.upload_emon:
             return
         if self.args.metric == "emon" or self.args.emon:
+            self._emon_output_file = Path(emon_output_file)
             self._emon_process = self.emon_manager.start_emon(emon_output_file)
 
     def pre_run(self) -> Dict[str, Any]:
@@ -303,12 +309,14 @@ class BaseWrapper(ABC):
         }
         profile.update({key: value for key, value in overrides.items() if value is not None})
 
-        if not profile.get("views"):
+        if self.args.emon_views:
+            profile["views"] = self.args.emon_views
+        else:
             views = [name for flag, name in (
-                (self.args.detailed_view, "thread"),
-                (True, "socket"),
-                (self.args.core_view, "core"),
+                (self.args.socket_view, "socket"),
+                (True, "core"),
                 (self.args.uncore_view, "uncore"),
+                (self.args.detailed_view, "thread"),
             ) if flag]
             profile["views"] = ",".join(views)
 
@@ -488,6 +496,18 @@ class BaseWrapper(ABC):
         if self._emon_process is not None:
             self.emon_manager.stop_emon(self._emon_process)
             self._emon_process = None
+        emon_cfg = self.config.get("emon") or {}
+        if (
+            not self.args.upload_emon
+            and (self.args.metric == "emon" or self.args.emon)
+            and self.run_dir is not None
+            and self._emon_output_file is not None
+            and emon_cfg.get("post_process", True) is not False
+        ):
+            self.emon_manager.process_emon(
+                str(self._emon_output_file),
+                str(self.result_manager.get_emon_processed_dir(self.run_dir)),
+            )
 
     def _utilization_is_acceptable(self) -> bool:
         """Fail runs whose CPU utilization is far under the workload's target.
