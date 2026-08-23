@@ -571,7 +571,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def _selected_workloads(args: argparse.Namespace) -> List[str]:
     if args.workload:
-        selected = list(args.workload)
+        # When caller explicitly selects workload(s), honor that list as-is.
+        # This keeps workload-specific wrapper args (e.g. --instances) from
+        # being applied to health_check first.
+        return list(args.workload)
     else:
         selected = list(WORKLOAD_REGISTRY.keys())
 

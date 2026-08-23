@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -58,6 +59,7 @@ _ANSI_GREEN = "\033[32m"
 _ANSI_YELLOW = "\033[33m"
 _ANSI_CYAN = "\033[36m"
 _ANSI_RESET = "\033[0m"
+INTER_WORKLOAD_SLEEP_SECONDS = 120
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +392,12 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"  [ERROR] Failed to launch {workload}: {exc}", file=sys.stderr)
             any_fail = True
+
+        if idx < len(workloads):
+            print(
+                f"  {_ANSI_CYAN}Sleeping {INTER_WORKLOAD_SLEEP_SECONDS}s before next workload...{_ANSI_RESET}\n"
+            )
+            time.sleep(INTER_WORKLOAD_SLEEP_SECONDS)
 
     if settings["dry_run"]:
         print(f"{_ANSI_CYAN}Dry-run complete. No workloads were executed.{_ANSI_RESET}")
