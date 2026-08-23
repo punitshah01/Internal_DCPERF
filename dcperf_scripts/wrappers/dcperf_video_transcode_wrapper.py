@@ -36,6 +36,7 @@ class VideoWrapper(BaseWrapper):
     # encoder-specific even though the run job name is (see get_job_name()).
     JOB_NAME = "video_transcode_bench_svt"
     WORKLOAD_NAME = "video_transcode_bench"
+    VALID_CODECS = {"svt", "x264", "aom"}
 
     def get_job_name(self) -> str:
         # Run job name switches with the selected encoder (video_transcode_bench_svt
@@ -53,13 +54,35 @@ class VideoWrapper(BaseWrapper):
         # see JOB_NAME comment), so encoder/runtime must stay optional here.
         # Enforced instead in validate_config(), which only runs before run().
         parser.add_argument("--encoder", choices=["svt", "x264", "aom"], default=None)
+        parser.add_argument(
+            "--codecs",
+            default=None,
+            help="Comma-separated codec list (e.g. svt,aom,x264). If set, runs each codec sequentially.",
+        )
         parser.add_argument("--runtime", choices=["short", "medium", "long"], default=None)
         parser.add_argument("--core-scaling", action="store_true", help="Run a core-scaling sweep")
         parser.add_argument("--total-cores", type=int, default=None, help="Total cores for scaling sweep")
 
+    def _resolve_codecs(self) -> List[str]:
+        if self.args.codecs:
+            codecs = [c.strip() for c in self.args.codecs.split(",") if c.strip()]
+            if not codecs:
+                raise SystemExit("video_transcode_bench: --codecs is empty; provide at least one codec")
+        elif self.args.encoder:
+            codecs = [self.args.encoder]
+        else:
+            raise SystemExit("video_transcode_bench: provide --codecs or --encoder")
+
+        invalid = [codec for codec in codecs if codec not in self.VALID_CODECS]
+        if invalid:
+            raise SystemExit(
+                "video_transcode_bench: unsupported codec(s) "
+                f"{', '.join(invalid)} (supported: svt,x264,aom)"
+            )
+        return codecs
+
     def validate_config(self) -> None:
-        if not self.args.encoder:
-            raise SystemExit("video_transcode_bench: --encoder is required (svt|x264|aom)")
+        self._resolved_codecs = self._resolve_codecs()
         if not self.args.runtime:
             raise SystemExit("video_transcode_bench: --runtime is required (short|medium|long)")
         if not self.config.get("video_dataset_path"):
@@ -212,6 +235,25 @@ class VideoWrapper(BaseWrapper):
                 time.sleep(2)
             rc = self.run()
             final_status = final_status or rc
+        return final_status
+
+    def run(self) -> int:
+        self.validate_config()
+        final_status = 0
+        original_encoder = self.args.encoder
+
+        for idx, codec in enumerate(self._resolved_codecs, 1):
+            self.args.encoder = codec
+            self.logger.info(
+                "video_wrapper: codec run %s/%s -> %s",
+                idx,
+                len(self._resolved_codecs),
+                codec,
+            )
+            rc = super().run()
+            final_status = final_status or rc
+
+        self.args.encoder = original_encoder
         return final_status
 
 

@@ -28,13 +28,15 @@ global:
   session_prefix: "run"
 
   # Ordered list of workloads to run. Remove or comment out a workload to skip it.
-  # Supported values: mediawiki, feedsim, tao_bench, video_transcode_bench,
+  # Supported values: mediawiki, feedsim, tao_bench,
+  #                   video_transcode_bench_short, video_transcode_bench_medium,
   #                   django_workload, spark_standalone
   workload_order:
     - mediawiki
     - feedsim
     - tao_bench
-    - video_transcode_bench
+    - video_transcode_bench_short
+    - video_transcode_bench_medium
     - django_workload
     - spark_standalone
 
@@ -55,9 +57,15 @@ workloads:
     # Run mode: standalone (single machine, validated) or autoscale (multi-machine, experimental).
     mode: standalone
 
-  video_transcode_bench:
-    # Encoding runtime budget: short (~5 min), medium (~20 min), or long (~60 min).
+  video_transcode_bench_short:
+    # Runtime budget for this variant: short (~5 min).
+    # All codecs (svt,aom,x264) run sequentially for each workload iteration.
     runtime: short
+
+  video_transcode_bench_medium:
+    # Runtime budget for this variant: medium (~20 min).
+    # All codecs (svt,aom,x264) run sequentially for each workload iteration.
+    runtime: medium
 
   django_workload:
     # Extra arguments forwarded verbatim to the django wrapper.
