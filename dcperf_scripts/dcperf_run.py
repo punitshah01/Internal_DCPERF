@@ -563,6 +563,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detailed-view", "-dv", action="store_true", help="Enable EMON detailed/thread view")
     parser.add_argument("--emon-views", "-w", default=None, help="TMC views, e.g. core,uncore")
     parser.add_argument("--experiment", type=str, default=None, help="Experiment name for grouping related sessions. Creates results/<workload>/<experiment>/session_NNN_<timestamp>/. If omitted, defaults to exp_YYYYMMDD.")
+    parser.add_argument("--runs", type=int, default=None, help="Number of runs per workload (passed to wrappers)")
     parser.add_argument("--results-dir", type=Path, default=None, help="Override default results base directory. Default: dcperf_scripts/results/.")
     parser.add_argument("--force", "-f", action="store_true", help="Force reinstall: remove from dcperf_install_state.txt and pass -f to benchpress_cli.py install")
     return parser
@@ -665,6 +666,8 @@ def main() -> int:
             extra_argv += ["--emon-views", args.emon_views]
         if args.experiment:
             extra_argv += ["--experiment", args.experiment]
+        if args.runs is not None:
+            extra_argv += ["--runs", str(args.runs)]
 
         result = _run_workload(workload, wrapper_cls, extra_argv)
         all_results.append(result)
