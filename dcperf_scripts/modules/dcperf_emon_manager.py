@@ -78,13 +78,67 @@ class EmonManager:
     # ------------------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Return True if SEP is installed and sep_vars.sh is present."""
+        """Return True if SEP is installed and emon is resolvable."""
         if self.sep_path is None:
             self.logger.warning("emon_manager: sep_path not configured")
             return False
         sep_vars = self.sep_path / "sep_vars.sh"
         if not sep_vars.exists():
             self.logger.warning("emon_manager: sep_vars.sh not found at %s", sep_vars)
+            return False
+        try:
+            direct = subprocess.run(["which", "emon"], capture_output=True, text=True)
+            if direct.returncode == 0:
+                return True
+            sourced = subprocess.run(
+                ["bash", "-lc", f"source {sep_vars} && command -v emon >/dev/null"],
+                capture_output=True,
+                text=True,
+            )
+            if sourced.returncode == 0:
+                return True
+        except OSError as exc:
+            self.logger.warning("emon_manager: emon availability check failed: %s", exc)
+            return False
+        self.logger.warning("emon_manager: emon command not found after sourcing %s", sep_vars)
+        return False
+
+    @staticmethod
+    def _looks_like_driver_error(output: str) -> bool:
+        markers = (
+            "sepint",
+            "socperf",
+            "driver",
+            "module",
+            "insmod",
+            "rmmod",
+            "problem accessing the sampling driver",
+            "driver may need to be",
+            "reinstalled with appropriate",
+        )
+        normalized = (output or "").lower()
+        return any(marker in normalized for marker in markers)
+
+    def _reload_drivers(self) -> bool:
+        if self.sep_path is None:
+            return False
+        sep_src = self.sep_path / "sepdk" / "src"
+        rmmod_script = sep_src / "rmmod-sep"
+        insmod_script = sep_src / "insmod-sep"
+        if not sep_src.exists() or not rmmod_script.exists() or not insmod_script.exists():
+            self.logger.warning("emon_manager: SEP driver scripts not found under %s", sep_src)
+            return False
+        self.logger.warning("emon_manager: attempting SEP driver reload")
+        try:
+            subprocess.run(["sudo", str(rmmod_script)], check=False, capture_output=True, text=True)
+            ins = subprocess.run(["sudo", str(insmod_script)], check=False, capture_output=True, text=True)
+            if ins.returncode != 0:
+                self.logger.warning("emon_manager: insmod-sep failed during reload: %s", ins.stderr)
+                return False
+            time.sleep(1)
+            return True
+        except OSError as exc:
+            self.logger.warning("emon_manager: SEP driver reload failed: %s", exc)
             return False
         return True
 
@@ -144,36 +198,54 @@ class EmonManager:
         out_path = Path(output_file)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        shell_cmd = f"source {sep_vars} && emon -collect-edp > {out_path} 2>&1"
-        self.logger.info("emon_manager: start_emon: %s", shell_cmd)
+        shell_cmd = f"source {sep_vars} && emon -collect-edp"
+        self.logger.info("emon_manager: start_emon: %s > %s 2>&1", shell_cmd, out_path)
 
         if self.dry_run:
             self.logger.info("emon_manager: [dry-run] EMON collection not started")
             return None
 
-        try:
-            log_handle = open(out_path, "w")
-        except OSError as exc:
-            self.logger.error("emon_manager: could not open EMON output file: %s", exc)
-            return None
+        for attempt in range(2):
+            try:
+                log_handle = open(out_path, "w")
+            except OSError as exc:
+                self.logger.error("emon_manager: could not open EMON output file: %s", exc)
+                return None
 
-        try:
-            proc = subprocess.Popen(
-                ["bash", "-c", shell_cmd],
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
+            try:
+                proc = subprocess.Popen(
+                    ["bash", "-lc", shell_cmd],
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            finally:
+                log_handle.close()
+
+            time.sleep(2)
+            if proc.poll() is None:
+                _emon_process = proc
+                return proc
+
+            error_text = ""
+            try:
+                if out_path.exists():
+                    error_text = out_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                error_text = ""
+
+            self.logger.error(
+                "emon_manager: EMON process exited immediately (rc=%s) on attempt %s",
+                proc.returncode,
+                attempt + 1,
             )
-        finally:
-            log_handle.close()
-
-        time.sleep(2)  # let emon establish before caller proceeds
-        if proc.poll() is not None:
-            self.logger.error("emon_manager: EMON process exited immediately (rc=%s)", proc.returncode)
+            if attempt == 0 and self._looks_like_driver_error(error_text):
+                self.logger.warning("emon_manager: detected SEP driver issue, retrying after reload")
+                if self._reload_drivers():
+                    continue
             return None
 
-        _emon_process = proc
-        return proc
+        return None
 
     def stop_emon(self, process: Optional[subprocess.Popen]) -> bool:
         """Stop a running EMON collection, always safe to call (idempotent)."""

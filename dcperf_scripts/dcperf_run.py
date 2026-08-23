@@ -317,9 +317,25 @@ def _check_path_exists(root: Optional[str], rel_path: str) -> Tuple[str, str]:
 
 def _check_sep_available(config: Dict[str, Any]) -> Tuple[str, str]:
     sep_path = config.get("sep_path")
-    if sep_path and (Path(sep_path) / "sep_vars.sh").exists():
+    if not sep_path:
+        return "WARN", "/opt/intel/sep missing"
+
+    sep_vars = Path(sep_path) / "sep_vars.sh"
+    if not sep_vars.exists():
+        return "WARN", f"{sep_path} missing sep_vars.sh"
+
+    try:
+        sourced = subprocess.run(
+            ["bash", "-lc", f"source {sep_vars} && command -v emon >/dev/null"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return "WARN", f"emon check failed: {exc}"
+
+    if sourced.returncode == 0:
         return "PASS", str(sep_path)
-    return "WARN", f"{sep_path or '/opt/intel/sep'} missing"
+    return "WARN", f"{sep_path} present but emon command unavailable"
 
 
 def _check_internet() -> Tuple[str, str]:
@@ -608,6 +624,22 @@ def main() -> int:
         logger.error("-e requires %s/sep_vars.sh. Skipping EMON collection.", sep_path)
         args.emon = False
         args.upload_emon = False
+    elif args.emon:
+        sep_vars = Path(str(sep_path)) / "sep_vars.sh"
+        try:
+            emon_check = subprocess.run(
+                ["bash", "-lc", f"source {sep_vars} && command -v emon >/dev/null"],
+                capture_output=True,
+                text=True,
+            )
+            if emon_check.returncode != 0:
+                logger.error("-e requires emon command after sourcing %s. Skipping EMON collection.", sep_vars)
+                args.emon = False
+                args.upload_emon = False
+        except OSError as exc:
+            logger.error("-e emon availability check failed (%s). Skipping EMON collection.", exc)
+            args.emon = False
+            args.upload_emon = False
 
     if not run_preflight_checks(config, logger, args.dry_run):
         logger.error("master_setup: preflight checks failed and user declined to continue")
