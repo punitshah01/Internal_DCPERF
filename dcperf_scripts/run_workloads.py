@@ -122,7 +122,7 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
                     parent.append(_parse_yaml_value(val_raw))
                 else:
                     # list under a mapping key
-                    last_key = list(parent.keys())[-1]
+                    last_key = next(reversed(parent))
                     if not isinstance(parent[last_key], list):
                         parent[last_key] = []
                     parent[last_key].append(_parse_yaml_value(val_raw))

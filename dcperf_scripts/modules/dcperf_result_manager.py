@@ -61,9 +61,17 @@ def collect_dcperf_score(dcperf_root: Optional[str], logger) -> Dict[str, Any]:
 
     Returns {} if dcperf_root is unset, the command fails, or not enough
     benchmarks have run for an overall score -- never raises.
+
+    Results are cached on the module level so repeated calls within the same
+    process do not spawn a new interpreter each time.
     """
     if not dcperf_root:
         return {}
+
+    # Module-level cache keyed by dcperf_root so the subprocess is only run once.
+    cache = collect_dcperf_score._cache  # type: ignore[attr-defined]
+    if dcperf_root in cache:
+        return cache[dcperf_root]
 
     cli = Path(dcperf_root) / "benchpress_cli.py"
     if not cli.exists():
@@ -92,7 +100,11 @@ def collect_dcperf_score(dcperf_root: Optional[str], logger) -> Dict[str, Any]:
         return {}
 
     scores["raw_output"] = output
+    cache[dcperf_root] = scores
     return scores
+
+
+collect_dcperf_score._cache: Dict[str, Any] = {}  # type: ignore[attr-defined]
 
 
 class ResultManager:
@@ -138,12 +150,14 @@ class ResultManager:
         return run_dir
 
     def _build_session_id(self, parent_dir: Path, timestamp: str) -> str:
-        """Count existing session_* dirs in parent_dir; return session_<NNN+1>_<timestamp>."""
-        existing = 0
-        if parent_dir.exists():
-            for child in parent_dir.iterdir():
-                if child.is_dir() and _SESSION_DIR_RE.match(child.name):
-                    existing += 1
+        """Count existing session_* dirs in parent_dir; return session_<NNN+1>_<timestamp>.
+
+        Uses glob("session_*") so only matching entries are iterated instead of
+        scanning every child and filtering with a regex afterwards.
+        """
+        existing = sum(
+            1 for p in parent_dir.glob("session_*") if p.is_dir()
+        ) if parent_dir.exists() else 0
         return f"session_{existing + 1:03d}_{timestamp}"
 
     @staticmethod
