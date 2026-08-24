@@ -397,7 +397,7 @@ def _extract_workload_summary(summary_path: Optional[Path], workload: str) -> Di
 def _render_final_table(rows: List[Dict[str, Any]]) -> None:
     if not rows:
         return
-    headers = ["Workload", "Status", "Runs", "Primary KPI / Score", "Duration(s)", "Exit"]
+    headers = ["Workload", "Status", "Runs", "Average KPI / Score", "Duration(s)", "Exit"]
     table_rows: List[List[str]] = []
     for row in rows:
         table_rows.append(
@@ -405,7 +405,7 @@ def _render_final_table(rows: List[Dict[str, Any]]) -> None:
                 str(row.get("workload", "")),
                 str(row.get("status", "UNKNOWN")),
                 str(row.get("runs", "")),
-                str(row.get("primary_kpi", "--")),
+                str(row.get("average_kpi") or row.get("primary_kpi", "--")),
                 str(row.get("duration_sec", "")),
                 str(row.get("exit_code", "")),
             ]
@@ -425,6 +425,31 @@ def _render_final_table(rows: List[Dict[str, Any]]) -> None:
     print(bar)
     for row in table_rows:
         print(_fmt(row))
+
+    print(f"\n{_ANSI_CYAN}Iteration Details{_ANSI_RESET}")
+    for row in rows:
+        print(f"\n{row.get('workload', '')}:")
+        iterations = row.get("iterations")
+        if not isinstance(iterations, list) or not iterations:
+            print(f"  Result dir : {row.get('output_dir') or 'n/a'}")
+            print(f"  KPI/Score  : {row.get('primary_kpi', '--')}")
+            continue
+        for iter_idx, iteration in enumerate(iterations, 1):
+            if not isinstance(iteration, dict):
+                continue
+            kpis = iteration.get("kpis", {})
+            if isinstance(kpis, dict) and kpis:
+                first_kpi = next(iter(kpis))
+                score = f"{kpis.get(first_kpi)} {first_kpi}"
+            else:
+                score = "--"
+            emon_state = "enabled" if iteration.get("emon_collected") else "disabled"
+            print(f"  Iteration {iter_idx}: {iteration.get('status', 'UNKNOWN')} | Score: {score} | EMON: {emon_state}")
+            print(f"    Result dir : {iteration.get('output_dir') or 'n/a'}")
+            print(f"    Files      : {iteration.get('results_json') or 'n/a'}; {iteration.get('results_csv') or 'n/a'}")
+            if iteration.get("emon_collected"):
+                print(f"    EMON raw   : {iteration.get('emon_raw_dir') or 'n/a'}")
+                print(f"    EMON proc  : {iteration.get('emon_processed_dir') or 'n/a'}")
 
 
 def _should_emit_compact_line(line: str) -> bool:
@@ -452,15 +477,26 @@ def _run_child_live(cmd: List[str], workload: str, verbose: bool) -> Dict[str, A
     )
 
     emitted_count = 0
+    in_summary_block = False
     try:
         with open(log_path, "w", encoding="utf-8", errors="ignore") as log_fh:
             assert process.stdout is not None
             for raw_line in process.stdout:
                 log_fh.write(raw_line)
                 line = raw_line.rstrip("\n")
+                stripped = line.strip()
                 if verbose:
                     print(f"    [{workload}] {line}")
                     emitted_count += 1
+                elif "=== ITERATION" in stripped or "=== ALL" in stripped:
+                    in_summary_block = True
+                    print(f"    [{workload}] {line}")
+                    emitted_count += 1
+                elif in_summary_block:
+                    print(f"    [{workload}] {line}")
+                    emitted_count += 1
+                    if stripped and set(stripped) == {"="}:
+                        in_summary_block = False
                 elif _should_emit_compact_line(line):
                     print(f"    [{workload}] {line}")
                     emitted_count += 1

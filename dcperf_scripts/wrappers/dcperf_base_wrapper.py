@@ -737,6 +737,7 @@ class BaseWrapper(ABC):
                 and any((self.run_dir / "emon" / "emon_processed").glob("*"))
             )
             emon_state = "collected, processed" if processed_ok else "collected, EDP post-process skipped/failed"
+        telemetry_enabled = bool(self.args.emon or self.args.upload_emon)
 
         kpi_lines = [f"    {name:<24}: {value}" for name, value in kpis.items()] or ["    (no KPIs captured)"]
 
@@ -744,7 +745,11 @@ class BaseWrapper(ABC):
             f"\n{'=' * 72}\n"
             f"[{self.get_workload_name()}] === ITERATION {iteration}/{total_runs} SUMMARY ===\n"
             f"  Output dir : {self.run_dir.resolve() if self.run_dir else 'n/a'}\n"
+            f"  Results    : {self.run_dir / 'results.json' if self.run_dir else 'n/a'}\n"
+            f"  CSV        : {self.run_dir / 'results.csv' if self.run_dir else 'n/a'}\n"
             f"  EMON       : {emon_state}\n"
+            f"  EMON raw   : {self.run_dir / 'emon' / 'emon_raw' if self.run_dir and telemetry_enabled else 'n/a'}\n"
+            f"  EMON proc  : {self.run_dir / 'emon' / 'emon_processed' if self.run_dir and telemetry_enabled else 'n/a'}\n"
             + "\n".join(kpi_lines) + "\n"
             f"  Status     : {status}\n"
             f"{'=' * 72}\n"
@@ -809,10 +814,27 @@ class BaseWrapper(ABC):
             if status == "PASS" and not self.args.dry_run and not self._utilization_is_acceptable():
                 status = "FAIL"
 
+            emon_raw_dir = self.run_dir / "emon" / "emon_raw" if self.run_dir is not None else None
+            emon_processed_dir = self.run_dir / "emon" / "emon_processed" if self.run_dir is not None else None
             row = dict(metadata)
             row.update(kpis)
             row["status"] = status
-            self._rows.append({"system": metadata, "params": {}, "kpis": kpis, "status": status})
+            self._rows.append(
+                {
+                    "system": metadata,
+                    "params": {},
+                    "kpis": kpis,
+                    "status": status,
+                    "output_dir": str(self.run_dir) if self.run_dir is not None else "",
+                    "results_csv": str(self.run_dir / "results.csv") if self.run_dir is not None else "",
+                    "results_json": str(self.run_dir / "results.json") if self.run_dir is not None else "",
+                    "metrics_json": str(self.run_dir / "metrics.json") if self.run_dir is not None else "",
+                    "emon_collected": bool(self.args.emon or self.args.upload_emon),
+                    "emon_raw_dir": str(emon_raw_dir) if emon_raw_dir is not None else "",
+                    "emon_processed_dir": str(emon_processed_dir) if emon_processed_dir is not None else "",
+                    "tmc_result_dir": self._tmc_result_dir,
+                }
+            )
 
             try:
                 self.result_manager.write_csv_row(self.run_dir, row)

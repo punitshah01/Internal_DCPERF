@@ -546,18 +546,29 @@ def _run_workload(workload: str, wrapper_cls: Type[Any], extra_argv: List[str]) 
 
     status = "PASS" if rc == 0 else "FAIL"
     primary_kpi = "--"
+    average_kpi = "--"
     if wrapper._rows:
         kpis = wrapper._rows[-1].get("kpis", {})
         if kpis:
             first_key = next(iter(kpis))
             primary_kpi = f"{kpis[first_key]} {first_key}"
+            numeric_values = []
+            for row in wrapper._rows:
+                try:
+                    numeric_values.append(float(row.get("kpis", {}).get(first_key)))
+                except (TypeError, ValueError):
+                    continue
+            if numeric_values:
+                average_kpi = f"{sum(numeric_values) / len(numeric_values):.4f} {first_key}"
 
     return {
         "workload": workload,
         "status": status,
         "runs": len(wrapper._rows),
         "primary_kpi": primary_kpi,
+        "average_kpi": average_kpi,
         "output_dir": str(wrapper.run_dir) if wrapper.run_dir else "",
+        "iterations": wrapper._rows,
     }
 
 
