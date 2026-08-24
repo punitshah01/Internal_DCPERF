@@ -561,12 +561,18 @@ def _run_workload(workload: str, wrapper_cls: Type[Any], extra_argv: List[str]) 
             if numeric_values:
                 average_kpi = f"{sum(numeric_values) / len(numeric_values):.4f} {first_key}"
 
+    cpu_samples = [
+        row.get("cpu_avg_pct") for row in wrapper._rows if isinstance(row.get("cpu_avg_pct"), (int, float))
+    ]
+    cpu_avg_pct = sum(cpu_samples) / len(cpu_samples) if cpu_samples else None
+
     return {
         "workload": workload,
         "status": status,
         "runs": len(wrapper._rows),
         "primary_kpi": primary_kpi,
         "average_kpi": average_kpi,
+        "cpu_avg_pct": cpu_avg_pct,
         "output_dir": str(wrapper.run_dir) if wrapper.run_dir else "",
         "iterations": wrapper._rows,
     }

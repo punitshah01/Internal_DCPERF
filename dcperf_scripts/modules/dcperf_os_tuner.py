@@ -14,18 +14,42 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+_TUNING_COMMAND_TIMEOUT_SECONDS = 60
+
+
+def _run_tuning_command(command, logger, description: str, shell: bool = False) -> bool:
+    """Run a tuning command without allowing sudo or kernel operations to hang a run."""
+    try:
+        subprocess.run(
+            command,
+            shell=shell,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_TUNING_COMMAND_TIMEOUT_SECONDS,
+        )
+        return True
+    except subprocess.TimeoutExpired:
+        logger.error(
+            "os_tuner: %s timed out after %ss",
+            description,
+            _TUNING_COMMAND_TIMEOUT_SECONDS,
+        )
+        return False
+    except subprocess.CalledProcessError as exc:
+        logger.error("os_tuner: %s failed: %s", description, exc.stderr)
+        return False
+    except OSError as exc:
+        logger.error("os_tuner: %s could not run: %s", description, exc)
+        return False
+
 
 def _write_sysctl(path: str, value: str, logger, dry_run: bool) -> bool:
-    cmd = f"echo {value} | sudo tee {path}"
+    cmd = f"echo {value} | sudo -n tee {path}"
     logger.info("os_tuner: %s", cmd)
     if dry_run:
         return True
-    try:
-        subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-        return True
-    except subprocess.CalledProcessError as exc:
-        logger.error("os_tuner: command failed (%s): %s", path, exc.stderr)
-        return False
+    return _run_tuning_command(cmd, logger, f"write {path}", shell=True)
 
 
 def drop_caches(logger, dry_run: bool = False) -> bool:
@@ -35,16 +59,11 @@ def drop_caches(logger, dry_run: bool = False) -> bool:
 
 def compact_memory(logger, dry_run: bool = False) -> bool:
     """Compact kernel memory (echo 1 > /proc/sys/vm/compact_memory)."""
-    cmd = "sync; echo 1 | sudo tee /proc/sys/vm/compact_memory"
+    cmd = "sync; echo 1 | sudo -n tee /proc/sys/vm/compact_memory"
     logger.info("os_tuner: %s", cmd)
     if dry_run:
         return True
-    try:
-        subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-        return True
-    except subprocess.CalledProcessError as exc:
-        logger.error("os_tuner: compact_memory failed: %s", exc.stderr)
-        return False
+    return _run_tuning_command(cmd, logger, "compact_memory", shell=True)
 
 
 def set_thp(mode: str, logger, dry_run: bool = False) -> bool:
@@ -68,12 +87,7 @@ def set_file_limits(limit: int, logger, dry_run: bool = False) -> bool:
     logger.info("os_tuner: %s", cmd)
     if dry_run:
         return True
-    try:
-        subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-        return True
-    except subprocess.CalledProcessError as exc:
-        logger.error("os_tuner: set_file_limits failed: %s", exc.stderr)
-        return False
+    return _run_tuning_command(cmd, logger, "set_file_limits", shell=True)
 
 
 def _generic_tuning(logger, dry_run: bool = False, thp_mode: str = "madvise", file_limit: int = 655350) -> Dict[str, bool]:
@@ -187,7 +201,7 @@ def restart_dns(logger, dry_run: bool = False) -> bool:
 
 def _sysctl_w(setting: str, value: str, logger, dry_run: bool) -> bool:
     """Apply one setting via `sysctl -w <setting>=<value>` (check=True, no os.system)."""
-    cmd = ["sudo", "sysctl", "-w", f"{setting}={value}"]
+    cmd = ["sudo", "-n", "sysctl", "-w", f"{setting}={value}"]
     logger.info("os_tuner: %s", " ".join(cmd))
     if dry_run:
         return True

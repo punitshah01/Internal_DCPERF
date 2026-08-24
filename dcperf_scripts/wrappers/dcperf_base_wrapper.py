@@ -92,6 +92,7 @@ class BaseWrapper(ABC):
         )
         self._emon_output_file: Optional[Path] = None
         self._emon_process: Optional[subprocess.Popen] = None
+        self._emon_error: str = ""
         self._rows: List[Dict[str, Any]] = []
         self.cpu_monitor: Optional[CpuMonitor] = None
         self._cpu_monitor_result: Dict[str, Any] = {}
@@ -247,6 +248,9 @@ class BaseWrapper(ABC):
         if self.args.metric == "emon" or self.args.emon:
             self._emon_output_file = Path(emon_output_file)
             self._emon_process = self.emon_manager.start_emon(emon_output_file)
+            if self._emon_process is None and not self.args.dry_run:
+                self._emon_error = "EMON collection did not start"
+                self.logger.error("base_wrapper: %s", self._emon_error)
 
     def pre_run(self) -> Dict[str, Any]:
         """Apply the workload-specific OS tuning profile and record it.
@@ -513,11 +517,14 @@ class BaseWrapper(ABC):
             and emon_cfg.get("post_process", True) is not False
         ):
             try:
-                self.emon_manager.process_emon(
+                processed = self.emon_manager.process_emon(
                     str(self._emon_output_file),
                     str(self.result_manager.get_emon_processed_dir(self.run_dir)),
                 )
+                if not processed:
+                    self._emon_error = "EMON post-processing failed"
             except Exception as exc:  # noqa: BLE001
+                self._emon_error = "EMON post-processing failed"
                 self.logger.warning("base_wrapper: EMON post-processing skipped due to error: %s", exc)
 
     def _utilization_is_acceptable(self) -> bool:
@@ -582,6 +589,8 @@ class BaseWrapper(ABC):
             print("Run did not pass -- check workload.log and stdout.log in the output directory.")
         if self.run_dir is not None:
             print(f"Output Directory: {self.run_dir.resolve()}")
+        if self._emon_error:
+            print(f"EMON Status: FAILED - {self._emon_error}")
 
     def _telemetry_mode(self) -> str:
         if self.args.upload_emon:
@@ -732,11 +741,14 @@ class BaseWrapper(ABC):
         if self.args.upload_emon:
             emon_state = f"uploaded (tmc dir: {self._tmc_result_dir or 'n/a'})"
         elif self.args.emon:
-            processed_ok = bool(
-                self.run_dir
-                and any((self.run_dir / "emon" / "emon_processed").glob("*"))
-            )
-            emon_state = "collected, processed" if processed_ok else "collected, EDP post-process skipped/failed"
+            if self._emon_error:
+                emon_state = f"FAILED - {self._emon_error}"
+            else:
+                processed_ok = bool(
+                    self.run_dir
+                    and any((self.run_dir / "emon" / "emon_processed").glob("*"))
+                )
+                emon_state = "collected, processed" if processed_ok else "collected"
         telemetry_enabled = bool(self.args.emon or self.args.upload_emon)
 
         kpi_lines = [f"    {name:<24}: {value}" for name, value in kpis.items()] or ["    (no KPIs captured)"]
@@ -758,6 +770,7 @@ class BaseWrapper(ABC):
     def _run_once(self) -> Tuple[int, str, Dict[str, Any]]:
         """Execute a single parse->run->report iteration. Returns
         (returncode, status, kpis)."""
+        self._emon_error = ""
         metadata = self.collect_metadata()
 
         self.run_dir = self.result_manager.create_run_dir(
@@ -771,9 +784,12 @@ class BaseWrapper(ABC):
         returncode = 1
 
         try:
+            print(f"[{self.get_workload_name()}] Starting EMON setup")
             emon_raw_dir = self.result_manager.get_emon_raw_dir(self.run_dir)
             self.setup_telemetry(str(emon_raw_dir / "emon.dat"))
+            print(f"[{self.get_workload_name()}] Applying pre-run tuning")
             self.pre_run()
+            print(f"[{self.get_workload_name()}] Starting benchmark execution")
 
             extra_args: List[str] = []
             job_vars = self.get_job_vars()
@@ -813,6 +829,9 @@ class BaseWrapper(ABC):
 
             if status == "PASS" and not self.args.dry_run and not self._utilization_is_acceptable():
                 status = "FAIL"
+            if status == "PASS" and self._emon_error:
+                status = "FAIL"
+                self.logger.error("base_wrapper: marking run FAIL because %s", self._emon_error)
 
             emon_raw_dir = self.run_dir / "emon" / "emon_raw" if self.run_dir is not None else None
             emon_processed_dir = self.run_dir / "emon" / "emon_processed" if self.run_dir is not None else None
@@ -833,6 +852,7 @@ class BaseWrapper(ABC):
                     "emon_raw_dir": str(emon_raw_dir) if emon_raw_dir is not None else "",
                     "emon_processed_dir": str(emon_processed_dir) if emon_processed_dir is not None else "",
                     "tmc_result_dir": self._tmc_result_dir,
+                    "cpu_avg_pct": self._cpu_monitor_result.get("avg_overall_pct"),
                 }
             )
 
