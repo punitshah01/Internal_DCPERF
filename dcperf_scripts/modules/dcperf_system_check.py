@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -83,7 +84,7 @@ def _read_cpuinfo(logger) -> Tuple[str, str, Set[Tuple[str, str]], Set[str]]:
     core_pairs: Set[Tuple[str, str]] = set()
     processor: Dict[str, str] = {}
 
-    for line in content.splitlines() + [""]:
+    for line in content.splitlines():
         if line.strip() == "":
             if processor:
                 physical_id = processor.get("physical id")
@@ -102,6 +103,13 @@ def _read_cpuinfo(logger) -> Tuple[str, str, Set[Tuple[str, str]], Set[str]]:
             model_name = value
         elif key in ("flags", "Features"):
             flags.update(value.split())
+
+    # Flush the final processor block if the file did not end with a blank line.
+    if processor:
+        physical_id = processor.get("physical id")
+        core_id = processor.get("core id")
+        if physical_id is not None and core_id is not None:
+            core_pairs.add((physical_id, core_id))
 
     if vendor_id == "GenuineIntel":
         vendor = "Intel"
@@ -245,11 +253,19 @@ def detect_system(logger) -> SystemInfo:
     total_ram_gb, available_ram_gb = _detect_memory(logger)
     dcperf_root = Path(__file__).resolve().parents[2]
     disk_free_gb = round(shutil.disk_usage(dcperf_root).free / 1024**3, 1)
-    numa_nodes = _detect_numa_nodes(logger)
     os_name, os_version, os_id = _detect_os(logger)
     kernel_version = platform.release()
-    has_internet = _check_internet(logger)
-    has_sudo = _check_sudo(logger)
+
+    # Run the three independent blocking calls (numactl subprocess, sudo
+    # subprocess, and TCP socket to github.com) in parallel so they don't
+    # serialise their individual timeouts/latencies.
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_numa = executor.submit(_detect_numa_nodes, logger)
+        future_internet = executor.submit(_check_internet, logger)
+        future_sudo = executor.submit(_check_sudo, logger)
+        numa_nodes = future_numa.result()
+        has_internet = future_internet.result()
+        has_sudo = future_sudo.result()
 
     info = SystemInfo(
         cpu_vendor=cpu_vendor,

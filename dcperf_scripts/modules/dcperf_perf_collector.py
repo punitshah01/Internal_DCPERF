@@ -77,14 +77,27 @@ class PerfCollector:
 
         deadline = time.time() + timeout
         path = Path(ramp_log_file)
-        while time.time() < deadline:
-            if path.exists():
-                try:
-                    if ramp_string in path.read_text(errors="ignore"):
-                        return True
-                except OSError:
-                    pass
-            time.sleep(1)
+        # Keep an open file handle and only read newly appended bytes each
+        # iteration instead of re-reading the entire (growing) log file.
+        fh = None
+        try:
+            while time.time() < deadline:
+                if fh is None and path.exists():
+                    try:
+                        fh = open(path, errors="ignore")  # noqa: SIM115
+                    except OSError:
+                        pass
+                if fh is not None:
+                    try:
+                        chunk = fh.read()
+                        if chunk and ramp_string in chunk:
+                            return True
+                    except OSError:
+                        pass
+                time.sleep(1)
+        finally:
+            if fh is not None:
+                fh.close()
         self.logger.warning("perf_collector: ramp marker not seen within timeout")
         return False
 
