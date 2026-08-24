@@ -860,6 +860,22 @@ def _format_live_line(workload: str, line: str) -> str:
     return line if stripped.startswith(prefix) else f"{prefix} {line}"
 
 
+def _terminate_process_tree(process: subprocess.Popen, force: bool) -> None:
+    """Signal the child's whole process group (it was started with
+    start_new_session=True, so this reaches its children too), falling back
+    to the single tracked pid on platforms without killpg (e.g. Windows)."""
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGINT)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        process.kill() if force else process.terminate()
+    except Exception:
+        pass
+
+
 def _stream_subprocess(
     cmd: List[str], workload: str, verbose: bool, progress: Optional[ProgressBar], log_fh
 ) -> Tuple[int, int]:
@@ -909,17 +925,13 @@ def _stream_subprocess(
     except KeyboardInterrupt:
         _print_live(f"\n  {_ANSI_YELLOW}[WARN] Interrupted by user; stopping {workload}...{_ANSI_RESET}", progress)
         if process.poll() is None:
+            _terminate_process_tree(process, force=False)
             try:
-                if hasattr(os, "killpg"):
-                    os.killpg(process.pid, signal.SIGINT)
-                else:
-                    process.terminate()
-                process.wait(timeout=10)
-            except Exception:
-                try:
-                    process.kill()
-                except Exception:
-                    pass
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+            if process.poll() is None:
+                _terminate_process_tree(process, force=True)
         raise
     finally:
         process.stdout.close()

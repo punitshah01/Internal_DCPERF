@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -66,7 +65,6 @@ WORKLOAD_REGISTRY: Dict[str, Type[Any]] = {
 
 _INSTALL_MARKER_FILE = SCRIPT_DIR / "dcperf_install_state.txt"
 _OS_PREREQS_MARKER_FILE = SCRIPT_DIR / "os_prereqs_installed.txt"
-_shutdown_requested = False
 _MIN_PYTHON = (3, 8)
 _MIN_FREE_DISK_GB = 100
 
@@ -86,15 +84,10 @@ _ANSI_YELLOW = "\033[33m"
 _ANSI_RED = "\033[31m"
 _ANSI_RESET = "\033[0m"
 
-
-def _signal_handler(signum, frame):
-    global _shutdown_requested
-    print(f"\nReceived signal {signum}; finishing current workload then stopping...")
-    _shutdown_requested = True
-
-
-signal.signal(signal.SIGINT, _signal_handler)
-signal.signal(signal.SIGTERM, _signal_handler)
+# Ctrl+C/SIGTERM handling is owned entirely by wrappers/dcperf_base_wrapper.py's
+# _signal_dispatch (kills the tracked subprocess tree and exits 130). This
+# module must not register its own handler -- a second signal.signal() call
+# here would silently replace that one and swallow every Ctrl+C instead.
 
 
 def _read_installed_jobs() -> List[str]:
@@ -681,10 +674,6 @@ def main() -> int:
     all_results: List[Dict[str, Any]] = []
 
     for workload in workloads:
-        if _shutdown_requested:
-            logger.warning("master_setup: shutdown requested, stopping before %s", workload)
-            break
-
         wrapper_cls = WORKLOAD_REGISTRY[workload]
 
         if do_install:

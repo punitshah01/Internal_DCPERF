@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import re
 import shlex
@@ -632,25 +633,30 @@ class BaseWrapper(ABC):
     # ------------------------------------------------------------------
 
     def handle_signal(self, signum, frame) -> None:
-        """Stop EMON, kill tracked subprocess, write partial results, exit cleanly."""
+        """Kill every tracked subprocess's whole process group immediately,
+        write partial results, exit cleanly.
+
+        An aborted run has nothing worth flushing gracefully, so this skips
+        stop_telemetry()'s SIGINT-then-wait EMON shutdown (which can block
+        for up to ~25s) and kills EMON and benchpress directly instead.
+        Both were started with start_new_session=True, so os.killpg reaches
+        their own children too -- a plain .terminate()/.kill() would not.
+        """
         global _current_proc
 
-        self.logger.warning("base_wrapper: received signal %s, cleaning up", signum)
-        try:
-            self.stop_telemetry()
-        except Exception:
-            pass
+        self.logger.warning("base_wrapper: received signal %s, killing subprocess tree", signum)
 
-        if _current_proc is not None and _current_proc.poll() is None:
-            try:
-                _current_proc.terminate()
-                _current_proc.wait(timeout=10)
-            except Exception:
+        for proc in (self._emon_process, _current_proc):
+            if proc is not None and proc.poll() is None:
                 try:
-                    _current_proc.kill()
-                except Exception:
-                    pass
-            _current_proc = None
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        self._emon_process = None
+        _current_proc = None
 
         if self._os_tuning_baseline is not None:
             try:

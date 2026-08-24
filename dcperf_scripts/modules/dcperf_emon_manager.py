@@ -10,46 +10,18 @@ depended on. Real commands (sep_vars.sh sourcing, ``emon -collect-edp``,
 
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Module-level global so the signal handler can reach the running EMON
-# process regardless of which EmonManager instance started it.
+# Module-level global so base_wrapper's signal handler (the single owner of
+# Ctrl+C/SIGTERM handling -- see dcperf_base_wrapper.py's _signal_dispatch)
+# can find and kill the running EMON process regardless of which
+# EmonManager instance started it.
 _emon_process: Optional[subprocess.Popen] = None
-
-
-def _install_signal_handlers() -> None:
-    """Register SIGINT/SIGTERM handlers that stop EMON before the process dies."""
-    previous_sigint = signal.getsignal(signal.SIGINT)
-    previous_sigterm = signal.getsignal(signal.SIGTERM)
-
-    def _handler(signum, frame):
-        global _emon_process
-        if _emon_process is not None and _emon_process.poll() is None:
-            try:
-                _emon_process.terminate()
-                _emon_process.wait(timeout=10)
-            except Exception:
-                try:
-                    _emon_process.kill()
-                except Exception:
-                    pass
-            _emon_process = None
-        # Chain to whatever handler was previously installed (if any).
-        if callable(previous_sigint) and signum == signal.SIGINT:
-            previous_sigint(signum, frame)
-        elif callable(previous_sigterm) and signum == signal.SIGTERM:
-            previous_sigterm(signum, frame)
-        raise SystemExit(130)
-
-    signal.signal(signal.SIGINT, _handler)
-    signal.signal(signal.SIGTERM, _handler)
-
-
-_install_signal_handlers()
 
 
 class EmonManager:
@@ -105,6 +77,7 @@ class EmonManager:
 
     @staticmethod
     def _looks_like_driver_error(output: str) -> bool:
+        # Matches pnpwls common/telemetry/emon.py's _check_for_driver_errors().
         markers = (
             "sepint",
             "socperf",
@@ -112,6 +85,8 @@ class EmonManager:
             "module",
             "insmod",
             "rmmod",
+            "vtss error",
+            "failed to open",
             "problem accessing the sampling driver",
             "driver may need to be",
             "reinstalled with appropriate",
@@ -153,6 +128,16 @@ class EmonManager:
                 self.logger.warning("emon_manager: insmod-sep failed during reload: %s", ins.stderr)
                 return False
             time.sleep(1)
+
+            # Matches pnpwls's reload_drivers(): verify exactly one sepint
+            # driver is loaded rather than trusting insmod's exit code alone.
+            verify = subprocess.run(["lsmod"], capture_output=True, text=True)
+            sep_loaded = verify.stdout.count("sepint")
+            if sep_loaded != 1:
+                self.logger.warning(
+                    "emon_manager: expected 1 sepint driver loaded after reload, found %s", sep_loaded
+                )
+                return False
             return True
         except subprocess.TimeoutExpired:
             self.logger.warning("emon_manager: SEP driver reload timed out")
@@ -233,8 +218,13 @@ class EmonManager:
                 return None
 
             try:
+                # shell=True + executable="/bin/bash" matches pnpwls's
+                # EmonCollector.start_collection(): sep_vars.sh must be
+                # sourced in the exact same shell that runs emon.
                 proc = subprocess.Popen(
-                    ["bash", "-lc", shell_cmd],
+                    shell_cmd,
+                    shell=True,
+                    executable="/bin/bash",
                     stdout=log_handle,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
@@ -263,8 +253,10 @@ class EmonManager:
                 self.logger.warning("emon_manager: detected SEP driver issue, retrying after reload")
                 if self._reload_drivers():
                     continue
-            return None
+            break
 
+        self.logger.error("emon_manager: EMON unavailable, continuing without telemetry")
+        print("[EMON] EMON unavailable — continuing without telemetry")
         return None
 
     def stop_emon(self, process: Optional[subprocess.Popen]) -> bool:
