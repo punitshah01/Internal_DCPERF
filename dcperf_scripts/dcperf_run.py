@@ -32,6 +32,7 @@ if str(SCRIPT_DIR / "wrappers") not in sys.path:
 
 from modules.dcperf_config_manager import ConfigManager, detect_distro
 from modules.dcperf_logger import get_logger
+from modules.dcperf_resource_manager import ResourceManager, TRACKED_KERNEL_KEYS, read_sysctl
 from modules.dcperf_result_manager import ResultManager, collect_dcperf_score
 
 # Wrapper classes are imported via the `wrappers.` package path, but each
@@ -415,7 +416,7 @@ def _run_benchpress_system_check(config: Dict[str, Any], logger, dry_run: bool) 
 
     if result.stdout:
         print(result.stdout)
-        logger.info("preflight: benchpress system_check output:\n%s", result.stdout)
+        logger.debug("preflight: benchpress system_check output:\n%s", result.stdout)
     if result.returncode != 0:
         return "WARN", f"system_check exited {result.returncode}"
     return "PASS", ""
@@ -530,45 +531,62 @@ def _install_workload(workload: str, wrapper_cls: Type[Any], config: Dict[str, A
         return False
 
 
-def _run_workload(workload: str, wrapper_cls: Type[Any], extra_argv: List[str]) -> Dict[str, Any]:
-    wrapper = wrapper_cls(extra_argv)
-    if getattr(wrapper.args, "core_scaling", False) and hasattr(wrapper, "run_core_scaling"):
-        rc = wrapper.run_core_scaling()
-    else:
-        rc = wrapper.run()
+def _run_workload(
+    workload: str, wrapper_cls: Type[Any], extra_argv: List[str], config: Dict[str, Any], dry_run: bool
+) -> Dict[str, Any]:
+    with ResourceManager(workload, config) as rm:
+        if not dry_run:
+            for key in TRACKED_KERNEL_KEYS:
+                rm.register_kernel_setting(key, read_sysctl(key))
+            if "--emon" in extra_argv or "--upload-emon" in extra_argv:
+                rm.register_emon()
 
-    status = "PASS" if rc == 0 else "FAIL"
-    primary_kpi = "--"
-    average_kpi = "--"
-    if wrapper._rows:
-        kpis = wrapper._rows[-1].get("kpis", {})
-        if kpis:
-            first_key = next(iter(kpis))
-            primary_kpi = f"{kpis[first_key]} {first_key}"
-            numeric_values = []
-            for row in wrapper._rows:
-                try:
-                    numeric_values.append(float(row.get("kpis", {}).get(first_key)))
-                except (TypeError, ValueError):
-                    continue
-            if numeric_values:
-                average_kpi = f"{sum(numeric_values) / len(numeric_values):.4f} {first_key}"
+        wrapper = wrapper_cls(extra_argv)
+        if getattr(wrapper.args, "core_scaling", False) and hasattr(wrapper, "run_core_scaling"):
+            rc = wrapper.run_core_scaling()
+        else:
+            rc = wrapper.run()
 
-    cpu_samples = [
-        row.get("cpu_avg_pct") for row in wrapper._rows if isinstance(row.get("cpu_avg_pct"), (int, float))
-    ]
-    cpu_avg_pct = sum(cpu_samples) / len(cpu_samples) if cpu_samples else None
+        status = "PASS" if rc == 0 else "FAIL"
+        primary_kpi = "--"
+        average_kpi = "--"
+        if wrapper._rows:
+            kpis = wrapper._rows[-1].get("kpis", {})
+            if kpis:
+                first_key = next(iter(kpis))
+                primary_kpi = f"{kpis[first_key]} {first_key}"
+                numeric_values = []
+                for row in wrapper._rows:
+                    try:
+                        numeric_values.append(float(row.get("kpis", {}).get(first_key)))
+                    except (TypeError, ValueError):
+                        continue
+                if numeric_values:
+                    average_kpi = f"{sum(numeric_values) / len(numeric_values):.4f} {first_key}"
 
-    return {
-        "workload": workload,
-        "status": status,
-        "runs": len(wrapper._rows),
-        "primary_kpi": primary_kpi,
-        "average_kpi": average_kpi,
-        "cpu_avg_pct": cpu_avg_pct,
-        "output_dir": str(wrapper.run_dir) if wrapper.run_dir else "",
-        "iterations": wrapper._rows,
-    }
+        cpu_samples = [
+            row.get("cpu_avg_pct") for row in wrapper._rows if isinstance(row.get("cpu_avg_pct"), (int, float))
+        ]
+        cpu_avg_pct = sum(cpu_samples) / len(cpu_samples) if cpu_samples else None
+
+        last_row = wrapper._rows[-1] if wrapper._rows else {}
+
+        result = {
+            "workload": workload,
+            "status": status,
+            "runs": len(wrapper._rows),
+            "primary_kpi": primary_kpi,
+            "average_kpi": average_kpi,
+            "cpu_avg_pct": cpu_avg_pct,
+            "output_dir": str(wrapper.run_dir) if wrapper.run_dir else "",
+            "emon_collected": last_row.get("emon_collected", False),
+            "emon_status": last_row.get("emon_status", ""),
+            "emon_error": last_row.get("emon_error", ""),
+            "tmc_result_dir": last_row.get("tmc_result_dir", ""),
+            "iterations": wrapper._rows,
+        }
+
+    return result
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -717,7 +735,7 @@ def main() -> int:
         # wrapper parser.
         extra_argv.extend(passthrough_argv)
 
-        result = _run_workload(workload, wrapper_cls, extra_argv)
+        result = _run_workload(workload, wrapper_cls, extra_argv, config, args.dry_run)
         all_results.append(result)
 
     dcperf_score: Dict[str, Any] = {}

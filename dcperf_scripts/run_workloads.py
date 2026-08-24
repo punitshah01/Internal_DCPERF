@@ -130,20 +130,28 @@ def _vbar() -> str:
     return "│" if _UNICODE_OK else "|"
 
 
-def render_box(lines: List[str], double: bool = False, min_width: int = 60) -> str:
+def render_box(lines: List[str], double: bool = False, min_width: int = 60, max_width: int = 80) -> str:
     """Render a bordered box around ``lines``. A line equal to '---' becomes
-    a horizontal divider. The box auto-sizes to the longest content line."""
+    a horizontal divider. The box auto-sizes to the longest content line,
+    capped at ``max_width`` -- longer lines are truncated with an ellipsis."""
     chars = _box_chars(double)
     content_lines = [line for line in lines if line != "---"]
-    inner_width = max([min_width - 4] + [len(line) for line in content_lines])
-    total_width = inner_width + 4
+    inner_width = min(max([min_width - 4] + [len(line) for line in content_lines]), max_width - 4)
 
+    def _fit(text: str) -> str:
+        if len(text) <= inner_width:
+            return text.ljust(inner_width)
+        ellipsis = "\u2026" if _UNICODE_OK else "..."
+        cut = max(inner_width - len(ellipsis), 0)
+        return (text[:cut] + ellipsis) if cut else text[:inner_width]
+
+    total_width = inner_width + 4
     out = [chars["tl"] + chars["h"] * (total_width - 2) + chars["tr"]]
     for line in lines:
         if line == "---":
             out.append(chars["lt"] + chars["h"] * (total_width - 2) + chars["rt"])
         else:
-            out.append(f"{chars['v']} {line.ljust(inner_width)} {chars['v']}")
+            out.append(f"{chars['v']} {_fit(line)} {chars['v']}")
     out.append(chars["bl"] + chars["h"] * (total_width - 2) + chars["br"])
     return "\n".join(out)
 
@@ -617,7 +625,30 @@ def _print_workload_header(idx: int, total: int, workload: str, settings: Dict[s
     print(f"\n{_ANSI_CYAN}{render_box(lines)}{_ANSI_RESET}")
 
 
-def _print_result_box(workload: str, status: str, duration_sec: float, kpi_str: str, cpu_str: str, output_dir: str) -> None:
+def _describe_emon(
+    emon_collected: bool, emon_status: str, emon_error: str, tmc_result_dir: str
+) -> str:
+    """One-line, accurate EMON/TMC state -- never a generic enabled/disabled."""
+    if not emon_collected:
+        return "disabled"
+    if tmc_result_dir:
+        return f"uploaded (tmc dir: {tmc_result_dir})"
+    if emon_status == "SKIPPED":
+        return f"raw data saved, EDP skipped ({emon_error})" if emon_error else "raw data saved (EDP skipped)"
+    if emon_status == "FAILED":
+        return f"failed ({emon_error})" if emon_error else "failed (see emon_raw/)"
+    return "collected"
+
+
+def _print_result_box(
+    workload: str,
+    status: str,
+    duration_sec: float,
+    kpi_str: str,
+    cpu_str: str,
+    output_dir: str,
+    emon_str: str = "",
+) -> None:
     ok = status == "PASS"
     mark = ("✅" if _UNICODE_OK else "[OK]") if ok else ("❌" if _UNICODE_OK else "[FAIL]")
     label = "COMPLETED" if ok else "FAILED"
@@ -626,8 +657,10 @@ def _print_result_box(workload: str, status: str, duration_sec: float, kpi_str: 
         "---",
         f"Duration : {_fmt_hms(duration_sec)}    KPI : {kpi_str}",
         f"Status   : {status}    CPU : {cpu_str}",
-        f"Results  : {output_dir or 'n/a'}",
     ]
+    if emon_str:
+        lines.append(f"EMON     : {emon_str}")
+    lines.append(f"Results  : {output_dir or 'n/a'}")
     color = _ANSI_GREEN if ok else _ANSI_RED
     print(f"{color}{render_box(lines)}{_ANSI_RESET}\n")
 
@@ -684,7 +717,12 @@ def _print_iteration_details(rows: List[Dict[str, Any]]) -> None:
                 score = f"{kpis.get(first_kpi)} {first_kpi}"
             else:
                 score = "--"
-            emon_state = "enabled" if iteration.get("emon_collected") else "disabled"
+            emon_state = _describe_emon(
+                bool(iteration.get("emon_collected")),
+                str(iteration.get("emon_status", "")),
+                str(iteration.get("emon_error", "")),
+                str(iteration.get("tmc_result_dir", "")),
+            )
             print(f"    Iteration {iter_idx}: {iteration.get('status', 'UNKNOWN')} | Score: {score} | EMON: {emon_state}")
             print(f"      Result dir : {iteration.get('output_dir') or 'n/a'}")
             print(f"      Files      : {iteration.get('results_json') or 'n/a'}; {iteration.get('results_csv') or 'n/a'}")
@@ -1053,11 +1091,17 @@ def _execute(settings: Dict[str, Any], args: argparse.Namespace) -> int:
         cpu_avg = extracted.get("cpu_avg_pct")
         cpu_str = f"{cpu_avg:.1f}% avg" if isinstance(cpu_avg, (int, float)) else "n/a"
         output_dir = extracted.get("output_dir", "")
+        emon_str = _describe_emon(
+            bool(extracted.get("emon_collected")),
+            str(extracted.get("emon_status", "")),
+            str(extracted.get("emon_error", "")),
+            str(extracted.get("tmc_result_dir", "")),
+        )
 
         if result_rc != 0:
             any_fail = True
 
-        _print_result_box(workload, status, duration, kpi_display, cpu_str, output_dir)
+        _print_result_box(workload, status, duration, kpi_display, cpu_str, output_dir, emon_str)
 
         workload_results.append(
             {
@@ -1074,6 +1118,13 @@ def _execute(settings: Dict[str, Any], args: argparse.Namespace) -> int:
         )
 
         if idx < len(workloads):
+            print("  [INFO] Cooldown 5s before next workload...")
+            try:
+                time.sleep(5)
+            except KeyboardInterrupt:
+                print(f"\n{_ANSI_YELLOW}Run interrupted during cooldown. Printing partial summary...{_ANSI_RESET}")
+                _print_final_summary_box(workload_results, time.time() - run_started, experiment_label)
+                return 130
             print(f"{_ANSI_CYAN}Sleeping {INTER_WORKLOAD_SLEEP_SECONDS}s before next workload...{_ANSI_RESET}\n")
             try:
                 time.sleep(INTER_WORKLOAD_SLEEP_SECONDS)

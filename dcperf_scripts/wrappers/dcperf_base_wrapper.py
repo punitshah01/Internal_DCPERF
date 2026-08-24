@@ -94,6 +94,7 @@ class BaseWrapper(ABC):
         self._emon_output_file: Optional[Path] = None
         self._emon_process: Optional[subprocess.Popen] = None
         self._emon_error: str = ""
+        self._emon_status: str = ""
         self._rows: List[Dict[str, Any]] = []
         self.cpu_monitor: Optional[CpuMonitor] = None
         self._cpu_monitor_result: Dict[str, Any] = {}
@@ -251,6 +252,7 @@ class BaseWrapper(ABC):
             self._emon_process = self.emon_manager.start_emon(emon_output_file)
             if self._emon_process is None and not self.args.dry_run:
                 self._emon_error = "EMON collection did not start"
+                self._emon_status = "FAILED"
                 self.logger.error("base_wrapper: %s", self._emon_error)
 
     def pre_run(self) -> Dict[str, Any]:
@@ -518,13 +520,15 @@ class BaseWrapper(ABC):
             and emon_cfg.get("post_process", True) is not False
         ):
             try:
-                processed = self.emon_manager.process_emon(
+                result = self.emon_manager.process_emon(
                     str(self._emon_output_file),
                     str(self.result_manager.get_emon_processed_dir(self.run_dir)),
                 )
-                if not processed:
-                    self._emon_error = "EMON post-processing failed"
+                self._emon_status = result.get("status", "FAILED")
+                if self._emon_status != "PASS":
+                    self._emon_error = result.get("reason", "")
             except Exception as exc:  # noqa: BLE001
+                self._emon_status = "FAILED"
                 self._emon_error = "EMON post-processing failed"
                 self.logger.warning("base_wrapper: EMON post-processing skipped due to error: %s", exc)
 
@@ -590,8 +594,8 @@ class BaseWrapper(ABC):
             print("Run did not pass -- check workload.log and stdout.log in the output directory.")
         if self.run_dir is not None:
             print(f"Output Directory: {self.run_dir.resolve()}")
-        if self._emon_error:
-            print(f"EMON Status: FAILED - {self._emon_error}")
+        if self._emon_status in ("SKIPPED", "FAILED"):
+            print(f"EMON Status: {self._emon_status} - {self._emon_error}")
 
     def _telemetry_mode(self) -> str:
         if self.args.upload_emon:
@@ -747,8 +751,8 @@ class BaseWrapper(ABC):
         if self.args.upload_emon:
             emon_state = f"uploaded (tmc dir: {self._tmc_result_dir or 'n/a'})"
         elif self.args.emon:
-            if self._emon_error:
-                emon_state = f"FAILED - {self._emon_error}"
+            if self._emon_status in ("SKIPPED", "FAILED"):
+                emon_state = f"{self._emon_status} - {self._emon_error}"
             else:
                 processed_ok = bool(
                     self.run_dir
@@ -777,6 +781,7 @@ class BaseWrapper(ABC):
         """Execute a single parse->run->report iteration. Returns
         (returncode, status, kpis)."""
         self._emon_error = ""
+        self._emon_status = ""
         metadata = self.collect_metadata()
 
         self.run_dir = self.result_manager.create_run_dir(
@@ -835,9 +840,9 @@ class BaseWrapper(ABC):
 
             if status == "PASS" and not self.args.dry_run and not self._utilization_is_acceptable():
                 status = "FAIL"
-            if status == "PASS" and self._emon_error:
-                status = "FAIL"
-                self.logger.error("base_wrapper: marking run FAIL because %s", self._emon_error)
+            # EMON is optional telemetry -- its status (SKIPPED/FAILED) is
+            # reported separately above/below and must never affect status,
+            # which is decided by the benchmark's own KPIs/CPU utilization only.
 
             emon_raw_dir = self.run_dir / "emon" / "emon_raw" if self.run_dir is not None else None
             emon_processed_dir = self.run_dir / "emon" / "emon_processed" if self.run_dir is not None else None
@@ -855,6 +860,8 @@ class BaseWrapper(ABC):
                     "results_json": str(self.run_dir / "results.json") if self.run_dir is not None else "",
                     "metrics_json": str(self.run_dir / "metrics.json") if self.run_dir is not None else "",
                     "emon_collected": bool(self.args.emon or self.args.upload_emon),
+                    "emon_status": self._emon_status,
+                    "emon_error": self._emon_error,
                     "emon_raw_dir": str(emon_raw_dir) if emon_raw_dir is not None else "",
                     "emon_processed_dir": str(emon_processed_dir) if emon_processed_dir is not None else "",
                     "tmc_result_dir": self._tmc_result_dir,

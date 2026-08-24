@@ -291,36 +291,45 @@ class EmonManager:
     # Post-processing
     # ------------------------------------------------------------------
 
-    def process_emon(self, emon_dat: str, output_dir: str) -> bool:
-        """Run EDP post-processing on a raw EMON .dat file into output_dir."""
+    def process_emon(self, emon_dat: str, output_dir: str) -> Dict[str, Any]:
+        """Run EDP post-processing on a raw EMON .dat file into output_dir.
+
+        Returns {"status": "PASS"|"SKIPPED"|"FAILED", "reason": str}. EDP
+        post-processing is optional telemetry enrichment -- a missing or
+        failing EDP binary must never affect the benchmark result, only
+        this status. The raw emon.dat is already saved regardless.
+        """
         if self.sep_path is None:
             self.logger.error("emon_manager: cannot process EMON data, sep_path not configured")
-            return False
+            return {"status": "FAILED", "reason": "sep_path not configured"}
 
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         edp_bin = self.sep_path / "bin64" / "edp"
         if not edp_bin.exists():
-            self.logger.warning(
-                "emon_manager: skipping EDP post-processing because %s is missing",
-                edp_bin,
+            reason = (
+                f"EDP binary not found at {edp_bin} -- skipping post-processing. "
+                "Raw EMON data is still saved in emon_raw/. Install pyedp to enable post-processing."
             )
-            return False
+            self.logger.warning("emon_manager: %s", reason)
+            return {"status": "SKIPPED", "reason": reason}
         cmd = [str(edp_bin), str(emon_dat), "-o", str(out_dir)]
 
         self.logger.info("emon_manager: process_emon: %s", " ".join(cmd))
         if self.dry_run:
-            return True
+            return {"status": "PASS", "reason": ""}
 
         try:
             subprocess.run(cmd, check=True, capture_output=True, text=True)
-            return True
+            return {"status": "PASS", "reason": ""}
         except subprocess.CalledProcessError as exc:
-            self.logger.error("emon_manager: EDP processing failed: %s", exc.stderr)
-            return False
+            reason = f"EDP processing failed: {exc.stderr}"
+            self.logger.error("emon_manager: %s", reason)
+            return {"status": "FAILED", "reason": reason}
         except OSError as exc:
-            self.logger.warning("emon_manager: unable to execute EDP (%s); skipping post-processing", exc)
-            return False
+            reason = f"unable to execute EDP ({exc}); skipping post-processing"
+            self.logger.warning("emon_manager: %s", reason)
+            return {"status": "SKIPPED", "reason": reason}
 
     # ------------------------------------------------------------------
     # View resolution (mirrors PNPWLS resolve_emon_views)
