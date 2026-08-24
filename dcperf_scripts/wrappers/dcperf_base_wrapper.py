@@ -665,8 +665,94 @@ class BaseWrapper(ABC):
     # ------------------------------------------------------------------
 
     def run(self) -> int:
-        """Execute the full parse->run->report flow. Returns a process exit code."""
+        """Execute --runs iterations of parse->run->report, printing a
+        per-iteration summary block after each one. Returns 0 only if every
+        iteration passed."""
+        total_runs = self.args.runs if self.args.runs and self.args.runs > 0 else 1
         self.validate_config()
+
+        overall_rc = 0
+        iteration_statuses: List[str] = []
+        iteration_kpis: List[Dict[str, Any]] = []
+        for iteration in range(1, total_runs + 1):
+            print(
+                f"\n{'=' * 72}\n"
+                f"[{self.get_workload_name()}] Starting iteration {iteration}/{total_runs}\n"
+                f"{'=' * 72}"
+            )
+            iter_rc, iter_status, iter_kpis = self._run_once()
+            self._print_iteration_summary(iteration, total_runs, iter_status, iter_kpis)
+            iteration_statuses.append(iter_status)
+            iteration_kpis.append(iter_kpis)
+            if iter_rc != 0:
+                overall_rc = iter_rc
+
+        self._print_multi_run_summary(total_runs, iteration_statuses, iteration_kpis)
+        return overall_rc
+
+    def _print_multi_run_summary(
+        self, total_runs: int, statuses: List[str], kpis_per_run: List[Dict[str, Any]]
+    ) -> None:
+        """Print the average KPI/score across all iterations before the
+        workload hands control back to the orchestrator for the next workload."""
+        pass_count = sum(1 for s in statuses if s == "PASS")
+        fail_count = total_runs - pass_count
+
+        averages: Dict[str, float] = {}
+        counts: Dict[str, int] = {}
+        for kpis in kpis_per_run:
+            for name, value in kpis.items():
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                averages[name] = averages.get(name, 0.0) + numeric
+                counts[name] = counts.get(name, 0) + 1
+
+        avg_lines = [
+            f"    {name:<24}: {averages[name] / counts[name]:.4f} (avg over {counts[name]} run(s))"
+            for name in averages
+        ] or ["    (no numeric KPIs to average)"]
+
+        print(
+            f"\n{'=' * 72}\n"
+            f"[{self.get_workload_name()}] === ALL {total_runs} ITERATION(S) COMPLETE ===\n"
+            f"  Runs       : {total_runs} total, {pass_count} PASS, {fail_count} FAIL\n"
+            f"  Average KPI/Score across {total_runs} run(s):\n"
+            + "\n".join(avg_lines) + "\n"
+            f"{'=' * 72}\n"
+        )
+
+    def _print_iteration_summary(
+        self, iteration: int, total_runs: int, status: str, kpis: Dict[str, Any]
+    ) -> None:
+        """Print a clean, single-glance block after each iteration: output
+        path, EMON state, KPI/score, and status -- before the next one starts."""
+        emon_state = "disabled"
+        if self.args.upload_emon:
+            emon_state = f"uploaded (tmc dir: {self._tmc_result_dir or 'n/a'})"
+        elif self.args.emon:
+            processed_ok = bool(
+                self.run_dir
+                and any((self.run_dir / "emon" / "emon_processed").glob("*"))
+            )
+            emon_state = "collected, processed" if processed_ok else "collected, EDP post-process skipped/failed"
+
+        kpi_lines = [f"    {name:<24}: {value}" for name, value in kpis.items()] or ["    (no KPIs captured)"]
+
+        print(
+            f"\n{'=' * 72}\n"
+            f"[{self.get_workload_name()}] === ITERATION {iteration}/{total_runs} SUMMARY ===\n"
+            f"  Output dir : {self.run_dir.resolve() if self.run_dir else 'n/a'}\n"
+            f"  EMON       : {emon_state}\n"
+            + "\n".join(kpi_lines) + "\n"
+            f"  Status     : {status}\n"
+            f"{'=' * 72}\n"
+        )
+
+    def _run_once(self) -> Tuple[int, str, Dict[str, Any]]:
+        """Execute a single parse->run->report iteration. Returns
+        (returncode, status, kpis)."""
         metadata = self.collect_metadata()
 
         self.run_dir = self.result_manager.create_run_dir(
@@ -761,7 +847,7 @@ class BaseWrapper(ABC):
 
             self.print_summary(status, kpis)
 
-        return 0 if status == "PASS" else 1
+        return (0 if status == "PASS" else 1), status, kpis
 
     def _build_consolidated_row(self, metadata: Dict[str, Any], kpis: Dict[str, Any], status: str) -> Dict[str, Any]:
         """Assemble one consolidated_results.xlsx row from this run's metadata/KPIs."""
