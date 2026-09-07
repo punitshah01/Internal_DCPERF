@@ -24,7 +24,7 @@ _WRAPPERS_DIR = Path(__file__).resolve().parent
 if str(_WRAPPERS_DIR) not in sys.path:
     sys.path.insert(0, str(_WRAPPERS_DIR))
 
-from dcperf_base_wrapper import BaseWrapper
+from run_base import BaseWrapper
 from modules.dcperf_core_scaler import get_total_cores, scale_generator, set_core_count
 
 _TAO_BENCH_REQUIRED_PACKAGES = ["binutils-devel"]
@@ -348,14 +348,17 @@ class TaoBenchWrapper(BaseWrapper):
         total = self.args.total_cores or get_total_cores()
         step = self.config.get("core_step", 16)
         final_status = 0
-        for cores in scale_generator(step, total, step):
-            self.logger.info("tao_bench_wrapper: core-scaling step -> %s cores", cores)
-            set_core_count(cores, self.logger, self.args.dry_run)
-            if not self.args.dry_run:
-                time.sleep(2)
-            rc = self.run()
-            final_status = final_status or rc
-        return final_status
+        try:
+            for cores in self.core_scaling_counts(total, step):
+                self.logger.info("tao_bench_wrapper: core-scaling step -> %s cores", cores)
+                set_core_count(cores, self.logger, self.args.dry_run)
+                if not self.args.dry_run:
+                    time.sleep(2)
+                rc = self.run()
+                final_status = final_status or rc
+            return final_status
+        finally:
+            self.restore_core_baseline()
 
     def execute(self) -> int:
         if getattr(self.args, "core_scaling", False):

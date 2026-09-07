@@ -71,6 +71,14 @@ ENV_VAR_MAP = {
     "DCPERF_TMC_EMON_USER": "tmc.emon_user",
 }
 
+LEGACY_TO_STRUCTURED = {
+    "results_base_dir": "global.results_dir",
+    "sep_path": "emon.sep_path",
+    "emon_event_file": "emon.event_file",
+    "emon_user": "tmc.emon_user",
+    "tao_bench_mode": "workloads.overrides.tao_bench.mode",
+}
+
 
 class ConfigError(ValueError):
     """Raised when configuration is invalid."""
@@ -98,6 +106,25 @@ def _set_nested(config: MutableMapping[str, Any], dotted_path: str, value: Any) 
     ref[keys[-1]] = value
 
 
+def _nested_value(config: Mapping[str, Any], dotted_path: str) -> Any:
+    value: Any = config
+    for key in dotted_path.split("."):
+        if not isinstance(value, Mapping) or key not in value:
+            return None
+        value = value[key]
+    return value
+
+
+def _normalize_legacy_file_config(file_cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Make legacy flat config keys participate in the structured config model."""
+    normalized = deepcopy(dict(file_cfg))
+    for legacy_key, structured_path in LEGACY_TO_STRUCTURED.items():
+        if legacy_key not in file_cfg or _nested_value(file_cfg, structured_path) is not None:
+            continue
+        _set_nested(normalized, structured_path, file_cfg[legacy_key])
+    return normalized
+
+
 def _parse_bool(raw: str) -> bool:
     lowered = raw.strip().lower()
     if lowered in {"1", "true", "yes", "on"}:
@@ -108,10 +135,10 @@ def _parse_bool(raw: str) -> bool:
 
 
 def _coerce_env_value(path: str, raw: str) -> Any:
-    if path.endswith(".enabled") or path.endswith(".dry_run"):
-        return _parse_bool(raw)
     if path == "workloads.enabled":
         return [item.strip() for item in raw.split(",") if item.strip()]
+    if path.endswith(".enabled") or path.endswith(".dry_run"):
+        return _parse_bool(raw)
     return raw
 
 
@@ -163,7 +190,11 @@ def _apply_legacy_aliases(config: MutableMapping[str, Any], config_path: Path) -
     tmc_cfg = config.get("tmc", {})
     workload_cfg = config.get("workloads", {}).get("overrides", {})
 
-    config["results_base_dir"] = global_cfg.get("results_dir")
+    results_dir = str(global_cfg.get("results_dir") or "results")
+    if not Path(results_dir).is_absolute():
+        results_dir = str((config_path.resolve().parent.parent / results_dir).resolve())
+        global_cfg["results_dir"] = results_dir
+    config["results_base_dir"] = results_dir
     config["default_runs"] = int(config.get("default_runs") or 1)
     config["sep_path"] = emon_cfg.get("sep_path")
     config["emon_event_file"] = emon_cfg.get("event_file")
@@ -192,7 +223,7 @@ def load_config(
                 raise ConfigError("Top-level config must be a mapping")
             file_cfg = loaded
 
-    config = _deep_merge(DEFAULT_CONFIG, file_cfg)
+    config = _deep_merge(DEFAULT_CONFIG, _normalize_legacy_file_config(file_cfg))
 
     for env_key, dotted_path in ENV_VAR_MAP.items():
         raw = env_values.get(env_key)

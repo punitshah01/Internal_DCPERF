@@ -1,21 +1,60 @@
 # dcperf_scripts
 
-## 1. Overview
+## Start Here
 
-dcperf_scripts orchestrates Facebook's [DCPerf](https://github.com/facebookresearch/DCPerf) benchmark suite (django_workload, feedsim, mediawiki, spark_standalone, tao_bench, video_transcode_bench, wdl_bench, health_check) with EMON/perf telemetry, OS tuning, core-scaling sweeps, and structured result capture layered on top of it. It does not replace DCPerf's own `benchpress_cli.py install/run` — every wrapper here calls that CLI under the hood and adds pre-flight checks, known-issue fixes, and machine-readable result artifacts around it.
+These scripts are the supported command-line entry points for the DCPerf workload
+runners. Run them from the repository root. Setup and workload execution require
+Linux, Python 3.8+, sudo access, and the prerequisites described below.
 
-**Scripts**
-| Script | Purpose |
+### Public entry points
+
+| Script | Use it for |
 |---|---|
-| `dcperf.py` | Unified CLI entry point for run/check/tune/list/results/config |
-| `dcperf_run.py` | Install + run individual workloads; EMON/TMC integration; result capture |
-| `run_workloads.py` | Master orchestrator — run multiple workloads back-to-back with one config file |
+| `dcperf_scripts/run_setup.py` | Install OS prerequisites and all DCPerf workloads |
+| `dcperf_scripts/run_workloads.py` | Run several workloads from one YAML configuration |
+| `dcperf_scripts/run_mediawiki.py` | Run MediaWiki directly |
+| `dcperf_scripts/run_feedsim.py` | Run FeedSim directly |
+| `dcperf_scripts/run_django_workload.py` | Run Django directly |
+| `dcperf_scripts/run_spark_standalone.py` | Run Spark Standalone directly |
+| `dcperf_scripts/run_tao_bench.py` | Run TaoBench directly |
+| `dcperf_scripts/run_video_transcode_bench.py` | Run Video Transcode directly |
+| `dcperf_scripts/run_wdl_bench.py` | Run WDLBench directly |
+| `dcperf_scripts/run_health_check.py` | Run the health check directly |
+
+### Recommended workflow
+
+```bash
+# 1. Install prerequisites and workloads once
+sudo python dcperf_scripts/run_setup.py
+
+# Optional: verify the host without installing anything
+python dcperf_scripts/run_setup.py --verify --workload health_check
+
+# 2. Check the available workload configuration
+python dcperf_scripts/run_workloads.py --show-config
+
+# 3. Preview a multi-workload run
+python dcperf_scripts/run_workloads.py --dry-run
+
+# 4. Run one workload directly
+python dcperf_scripts/run_mediawiki.py --dry-run
+
+# 5. Run selected workloads from the YAML configuration
+python dcperf_scripts/run_workloads.py --workloads mediawiki,feedsim,tao_bench
+```
+
+Use `--help` on any launcher to see its workload-specific options. The old
+`dcperf.py` and `dcperf_run.py` files remain implementation-compatible aliases
+for existing automation; new commands and documentation should use the
+`run_*.py` names above.
+
+## Overview
+
+dcperf_scripts orchestrates Facebook's [DCPerf](https://github.com/facebookresearch/DCPerf) benchmark suite with EMON/perf telemetry, OS tuning, core-scaling sweeps, and structured result capture. Every runner calls DCPerf's `benchpress_cli.py` under the hood and adds pre-flight checks, known-issue fixes, and machine-readable result artifacts around it.
 
 Legacy pre-refactor scripts (`dj_perf.py`, `fs_perf.py`, `mw_perf.py`, `sweep.py`, `vt_script.py`) live under `legacy/` for reference only.
 
----
-
-## Unified CLI (recommended)
+## Advanced unified CLI
 
 ```bash
 python dcperf_scripts/dcperf.py run --workload mediawiki --iterations 3 --experiment my_test
@@ -34,16 +73,29 @@ python dcperf_scripts/dcperf.py config --validate
 - Quickstart: `dcperf_scripts/docs/QUICKSTART.md`
 - Config reference: `dcperf_scripts/docs/CONFIG_REFERENCE.md`
 
+## Supported Workloads
+
+| Workload | Category | Primary metric | Standalone command |
+|---|---|---|---|
+| `mediawiki` | Web serving | Requests/sec and p99 latency | `python dcperf_scripts/run_mediawiki.py` |
+| `feedsim` | Ranking/inference | QPS and p95 latency | `python dcperf_scripts/run_feedsim.py` |
+| `django_workload` | Web serving | Transaction rate | `python dcperf_scripts/run_django_workload.py` |
+| `tao_bench` | Cache/database | Throughput, latency, hit ratio | `python dcperf_scripts/run_tao_bench.py` |
+| `spark_standalone` | Analytics/query | Query latency | `python dcperf_scripts/run_spark_standalone.py` |
+| `video_transcode_bench` | Transcode | Encoding time/throughput | `python dcperf_scripts/run_video_transcode_bench.py` |
+| `wdl_bench` | Microbenchmark | Library-specific KPI | `python dcperf_scripts/run_wdl_bench.py` |
+| `health_check` | System health | Memory, network, syscall checks | `python dcperf_scripts/run_health_check.py` |
+
 ---
 
 ## run_workloads.py — Quick-start
 
 ### 2. Requirements
 
-- Python 3.8+, `pyyaml` (`pip install pyyaml`), sudo access
+- Python 3.8+, `click`, `PyYAML`, `pandas`, `openpyxl`, `Jinja2`, sudo access
 - Run the initial setup first so workloads are installed:
   ```bash
-  python dcperf_run.py --install-only --all
+  sudo python dcperf_scripts/run_setup.py
   ```
 
 ### 3. Configuration
@@ -81,13 +133,19 @@ Key config sections:
 python dcperf_scripts/run_workloads.py
 
 # Run only selected workloads
-python dcperf_scripts/run_workloads.py --workload-list mediawiki,feedsim,tao_bench
+python dcperf_scripts/run_workloads.py --workloads mediawiki,feedsim,tao_bench
 
 # Override a few settings without editing the config
 python dcperf_scripts/run_workloads.py --no-emon --iterations 3 --experiment weekly_run
 
 # Preview commands without executing
 python dcperf_scripts/run_workloads.py --dry-run
+
+# Collect EMON/perf and run a core-count sweep
+python dcperf_scripts/run_workloads.py --emon --perf --cores 16,32,64
+
+# Disable OS tuning for a controlled comparison
+python dcperf_scripts/run_workloads.py --no-tune-os
 
 # Use a different config file
 python dcperf_scripts/run_workloads.py --config /path/to/other_config.yaml
@@ -98,8 +156,12 @@ python dcperf_scripts/run_workloads.py --config /path/to/other_config.yaml
 | Flag | Description |
 |---|---|
 | `--config FILE` | Path to YAML config (default: `run_workloads.config.yaml`) |
-| `--workload-list W1,W2` | Comma-separated workload names |
+| `--workload-list, --workloads W1,W2` | Comma-separated workload names |
 | `--no-emon` | Disable EMON collection |
+| `--emon` | Enable EMON collection |
+| `--perf` | Collect Linux perf data |
+| `--cores N1,N2,...` | Run explicit core-count sweep points |
+| `--tune-os`, `--no-tune-os` | Enable or disable OS tuning |
 | `--iterations N` | Number of runs per workload |
 | `--experiment NAME` | Experiment name |
 | `--session-prefix PREFIX` | Session name prefix |
@@ -111,7 +173,7 @@ python dcperf_scripts/run_workloads.py --config /path/to/other_config.yaml
 
 **Install**
 ```bash
-python dcperf_run.py --install-only --workload mediawiki
+  python dcperf_scripts/run_setup.py --workload mediawiki
 ```
 **Run (via run_workloads.py)**  
 Set in `run_workloads.config.yaml`:
@@ -127,7 +189,7 @@ workloads:
 
 **Install**
 ```bash
-python dcperf_run.py --install-only --workload feedsim
+  python dcperf_scripts/run_setup.py --workload feedsim
 ```
 **Run (via run_workloads.py)**
 ```yaml
@@ -142,7 +204,7 @@ workloads:
 
 **Install**
 ```bash
-python dcperf_run.py --install-only --workload tao_bench
+  python dcperf_scripts/run_setup.py --workload tao_bench
 ```
 **Run (via run_workloads.py)**
 ```yaml
@@ -157,7 +219,7 @@ workloads:
 
 **Install**
 ```bash
-python dcperf_run.py --install-only --workload video_transcode_bench
+  python dcperf_scripts/run_setup.py --workload video_transcode_bench
 ```
 **Run (via run_workloads.py)**
 ```yaml
@@ -172,7 +234,7 @@ workloads:
 
 **Install**
 ```bash
-python dcperf_run.py --install-only --workload django_workload
+  python dcperf_scripts/run_setup.py --workload django_workload
 ```
 **Run (via run_workloads.py)** — no workload-specific config keys required.
 
@@ -180,7 +242,7 @@ python dcperf_run.py --install-only --workload django_workload
 
 **Install**
 ```bash
-python dcperf_run.py --install-only --workload spark_standalone
+  python dcperf_scripts/run_setup.py --workload spark_standalone
 ```
 **Run (via run_workloads.py)** — no workload-specific config keys required.  
 > Note: Spark requires a provisioned NVMe dataset path (`spark_data_path`) set in `config/dcperf_config.yaml`.
@@ -195,7 +257,7 @@ python dcperf_run.py --install-only --workload spark_standalone
 - sudo access required (OS tuning, EMON driver load/unload, package installs)
 - Please set `ulimit -n` to at least 65536 (permanent: edit `/etc/security/limits.conf`)
 
-**Per-OS prerequisite install commands** (run automatically by `dcperf_run.py` before any `--install-only`/`--all` run, via `install_os_prerequisites()`; can also be run manually):
+**Per-OS prerequisite install commands** (run automatically by `run_setup.py`, via `install_os_prerequisites()`; can also be run manually):
 
 CentOS Stream 8:
 ```bash
@@ -279,44 +341,43 @@ cp dcperf_scripts/config/dcperf_config.yaml.example dcperf_scripts/config/dcperf
 vim dcperf_scripts/config/dcperf_config.yaml   # fill in null values you need
 
 # 3. Install all workloads
-cd dcperf_scripts
-python dcperf_run.py --install-only --all
+python dcperf_scripts/run_setup.py
 
 # 4. Install one workload
-python dcperf_run.py --install-only --workload tao_bench
+python dcperf_scripts/run_setup.py --workload tao_bench
 ```
 
-Install is idempotent by default. `dcperf_run.py` skips OS prerequisite installation when `os_prereqs_installed.txt` is present, and skips each workload when either DCPerf's `benchmark_installs.txt` or `dcperf_install_state.txt` says it is installed and the wrapper's read-only dependency/data check passes. Use `--force` to bypass those checks and reinstall.
+Install is idempotent by default. `run_setup.py` skips OS prerequisite installation when `os_prereqs_installed.txt` is present, and skips each workload when either DCPerf's `benchmark_installs.txt` or `dcperf_install_state.txt` says it is installed and the wrapper's read-only dependency/data check passes. Use `--force` to bypass those checks and reinstall.
 
 ## 4. Running
 
 ```bash
-# Run everything
-python dcperf_run.py --run-only --all
+# Run everything from the configured workload list
+python dcperf_scripts/run_workloads.py
 
 # Run with local EMON telemetry only
-python dcperf_run.py --run-only --all -e
+python dcperf_scripts/run_workloads.py --emon
 
 # Run with EMON telemetry + TMC upload
-python dcperf_run.py --run-only --all -ue
+python dcperf_scripts/run_workloads.py --upload-emon
 
 # Run one workload, grouped under a named experiment
-python dcperf_run.py --run-only --workload django_workload --experiment my_experiment
+python dcperf_scripts/run_django_workload.py --runs 1 --experiment my_experiment
 
 # Dry run (no execution, shows commands)
-python dcperf_run.py --dry-run --all -e
+python dcperf_scripts/run_workloads.py --dry-run
 
-# Resume after failure
-python dcperf_run.py --run-only --all --resume
+# Run selected workloads
+python dcperf_scripts/run_workloads.py --workload-list mediawiki,feedsim
 
 # Force reinstall a workload
-python dcperf_run.py --install-only --workload tao_bench --force
+python dcperf_scripts/run_setup.py --workload tao_bench --force
 
-# Full install + run
-python dcperf_run.py --all -ue
+# Full setup followed by a run
+python dcperf_scripts/run_setup.py
+python dcperf_scripts/run_workloads.py --upload-emon
 
-# Override the results base directory
-python dcperf_run.py --run-only --all --results-dir /data/dcperf_results
+# Resume and other advanced orchestration flags remain available through dcperf_run.py
 ```
 
 ## 5. Configuration Reference
@@ -410,7 +471,7 @@ A `summary_<timestamp>/run_summary.json` + `run_summary.txt` is written once per
 - **Known issue — zlib download for folly build:** if `<dcperf_root>/benchmarks/tao_bench/build-folly/downloads/zlib-zlib-1.3.1.tar.gz` is missing or zero-byte, it's fetched from the zlib fossils mirror automatically.
 - **Direct run command** (bypassing the master entry point):
   ```bash
-  python wrappers/dcperf_tao_bench_wrapper.py --mode standalone --test-time 300
+  python dcperf_scripts/run_tao_bench.py --mode standalone --test-time 300
   ```
 
 ### spark_standalone
@@ -458,11 +519,11 @@ A `summary_<timestamp>/run_summary.json` + `run_summary.txt` is written once per
 | `HH\invariant_violation` in `SystemChecks::CheckCPUFreq()` | Handled automatically by `apply_mediawiki_patches()`; verify `oss-performance/base/SystemChecks.php` contains the disabled marker if it recurs |
 | TaoBench folly build fails on zlib download | Handled automatically by `pre_install_check()`; verify network access to `zlib.net` if it still fails |
 | Video dataset download or extraction fails | Verify Artifactory access to `video_dataset_url`; retry manually with `wget <video_dataset_url> -O cuts.tar.gz && tar xzf cuts.tar.gz` inside `video_dataset_path` |
-| Spark run fails with NVMe-TCP errors | Run `python dcperf_run.py --workload spark_standalone --dry-run` first to see the full prerequisite check output; `nvmet`/`nvmet-tcp`/`nvmet-rdma` modules must be loaded |
-| `OS tuning requires sudo` FAIL in preflight | Run `sudo python dcperf_run.py ...` or add your user to sudoers for passwordless `sudo -n` |
+| Spark run fails with NVMe-TCP errors | Run `python dcperf_scripts/run_spark_standalone.py --dry-run` first to see the full prerequisite check output; `nvmet`/`nvmet-tcp`/`nvmet-rdma` modules must be loaded |
+| `OS tuning requires sudo` FAIL in preflight | Run the named launcher with `sudo`, for example `sudo python dcperf_scripts/run_workloads.py`, or add your user to sudoers for passwordless `sudo -n` |
 | `ConfigManager.require()` keeps prompting | The saved value didn't persist — check that `config/dcperf_config.yaml` is writable |
 | `dcperf_root` not auto-detected | Set it explicitly in `config/dcperf_config.yaml`; auto-detect only walks up looking for `benchpress/config/benchmarks.yml` |
-| TaoBench hit ratio outside 0.88–0.90 | Adjust `--memsize`; logged as a warning by `dcperf_tao_bench_wrapper.py` |
+| TaoBench hit ratio outside 0.88–0.90 | Adjust `--memsize`; logged as a warning by `run_tao_bench.py` |
 
 ## 10. WLC / Orchestrator Integration
 
@@ -484,7 +545,7 @@ A `summary_<timestamp>/run_summary.json` + `run_summary.txt` is written once per
 ## 11. Adding a New Workload
 
 1. Add the job name/benchmark name to `config/dcperf_workload_manifest.json`.
-2. Create `wrappers/dcperf_<name>_wrapper.py` inheriting `BaseWrapper` (use `wrappers/dcperf_base_wrapper.py` and `wrappers/dcperf_tao_bench_wrapper.py` as templates).
+2. Create `run_<name>.py` inheriting `BaseWrapper` (use `run_base.py` and `run_tao_bench.py` as templates).
 3. Implement the 5 abstract methods: `get_job_name()`, `get_workload_name()`, `parse_output()`, `get_kpis()`, `get_csv_schema()`.
 4. Override `pre_install_hook()`/`pre_run()`/`post_run()` only if the workload needs install patches, prerequisite checks, dataset prep, or post-run cleanup.
 5. Register the new class in `WORKLOAD_REGISTRY` in `dcperf_run.py` — this is the single place that needs a new line.
@@ -534,10 +595,10 @@ Note: If CPU utilization is outside the target range, the automation logs a warn
 WDLBench uses a separate benchmark registry file (`benchmarks_wdl.yml`/`jobs_wdl.yml`), not the default `benchmarks.yml`/`jobs.yml`. Run with:
 
 ```bash
-python dcperf_run.py --workload wdl_bench
+python dcperf_scripts/run_wdl_bench.py
 ```
 
-`get_benchpress_global_args()` in `dcperf_wdl_bench_wrapper.py` automatically adds `-b benchmarks_wdl.yml -j jobs_wdl.yml` to every benchpress invocation for this workload. See `packages/wdl_bench/README.md` for details.
+`get_benchpress_global_args()` in `run_wdl_bench.py` automatically adds `-b benchmarks_wdl.yml -j jobs_wdl.yml` to every benchpress invocation for this workload. See `packages/wdl_bench/README.md` for details.
 
 ## 15. Benchpress System Check
 

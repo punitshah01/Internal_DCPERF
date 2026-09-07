@@ -1,6 +1,7 @@
 # DCPerf Config Reference
 
-Config file: `/home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/config/dcperf_config.yaml`
+Config file: `dcperf_scripts/config/dcperf_config.yaml` (copy from
+`dcperf_config.yaml.example` on a new checkout)
 
 ## Sections
 
@@ -35,6 +36,14 @@ Config file: `/home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/c
 - `scaling`
   - `enabled`: reserve for scale sweep flows
   - `core_counts`: list of core-count targets
+- `perf_events`
+  - optional comma-separated Linux `perf` event names used by `--perf`
+
+The loader also accepts the legacy flat keys used by older configs, including
+`dcperf_root`, `sep_path`, `emon_event_file`, `emon_user`,
+`results_base_dir`, `default_runs`, and workload-specific paths. They are
+normalized into the structured model while remaining available to workload
+runners.
 
 ## Environment Variable Overrides
 
@@ -59,3 +68,18 @@ Supported overrides (higher precedence than file values):
 2. Environment variables
 3. Config file values
 4. Built-in defaults (lowest)
+
+## Common Runner Options
+
+Every named workload runner supports the shared options below in addition to
+its workload-specific flags:
+
+- `--config FILE`: use a different DCPerf configuration file.
+- `--results-dir DIR`: override the result root.
+- `--runs N` or `--iterations N`: repeat the runner. Django retains its
+  historical workload-specific `--iterations` meaning; use `--runs` for repeat
+  count there.
+- `--emon` and `--perf`: enable telemetry collectors.
+- `--tune-os` or `--no-tune-os`: enable or disable OS tuning.
+- `--cores 16,32,64`: run explicit core-scaling points.
+- `--verbose`: enable debug logging.

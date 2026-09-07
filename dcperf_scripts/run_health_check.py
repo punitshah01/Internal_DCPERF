@@ -18,7 +18,7 @@ _WRAPPERS_DIR = Path(__file__).resolve().parent
 if str(_WRAPPERS_DIR) not in sys.path:
     sys.path.insert(0, str(_WRAPPERS_DIR))
 
-from dcperf_base_wrapper import BaseWrapper
+from run_base import BaseWrapper
 
 
 class HealthCheckWrapper(BaseWrapper):

@@ -14,6 +14,8 @@ import platform
 
 import yaml
 
+from modules.dcperf_config_loader import ConfigError, load_config
+
 
 def detect_distro() -> str:
     """Return 'centos8', 'centos9', 'ubuntu', or 'unknown' from /etc/os-release.
@@ -42,9 +44,10 @@ def detect_distro() -> str:
 
 
 class ConfigManager:
-    def __init__(self, config_path: Path, logger):
+    def __init__(self, config_path: Path, logger, persist: bool = True):
         self.config_path = Path(config_path)
         self.logger = logger
+        self.persist = persist
         self._config: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
@@ -53,19 +56,21 @@ class ConfigManager:
 
     def load(self) -> Dict[str, Any]:
         """Read setup_config.yaml and auto-detect dcperf_root if it is null."""
-        if self.config_path.exists():
-            with open(self.config_path, "r", encoding="utf-8") as fh:
-                self._config = yaml.safe_load(fh) or {}
-        else:
+        if not self.config_path.exists():
             self.logger.warning("config_manager: %s not found, starting with empty config", self.config_path)
-            self._config = {}
+        try:
+            self._config = load_config(self.config_path)
+        except ConfigError as exc:
+            self.logger.error("config_manager: invalid configuration: %s", exc)
+            raise
 
         if not self._config.get("dcperf_root"):
             detected = self._auto_detect_dcperf_root()
             if detected:
                 self._config["dcperf_root"] = str(detected)
                 self.logger.info("config_manager: auto-detected dcperf_root=%s", detected)
-                self.save()
+                if self.persist:
+                    self.save()
             else:
                 self.logger.warning("config_manager: could not auto-detect dcperf_root")
 
@@ -110,7 +115,7 @@ class ConfigManager:
             )
             derived_changed = True
 
-        if derived_changed:
+        if derived_changed and self.persist:
             self.save()
 
         return self._config

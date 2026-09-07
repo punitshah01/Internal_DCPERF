@@ -190,6 +190,10 @@ please feel free to use the following Table of Contents:
 - [**Profiling**](#profiling)
 - [**Expected CPU Utilization**](#expected-cpu-utilization)
 
+For the maintained wrapper workflow, start with the
+[script runner guide](dcperf_scripts/README.md). It documents the
+`run_setup.py`, `run_workloads.py`, and `run_<workload>.py` entry points.
+
 ### System Requirements
 
 - CPU Architecture: x86_64 or aarch64

@@ -1,53 +1,68 @@
 # DCPerf Quick Start
 
-## 1) Configure once
+Run these commands from the repository root.
 
-Edit `/home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/config/dcperf_config.yaml`:
+## 1. Configure once
 
-- `global.experiment_name`
-- `global.results_dir`
-- `emon.*` / `tmc.*` if telemetry is needed
-- `workloads.enabled`
-
-## 2) Validate config
+Copy the example configuration and edit the values for your machine:
 
 ```bash
-python /home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/dcperf.py config --validate
+cp dcperf_scripts/run_workloads.config.example.yaml \
+   dcperf_scripts/run_workloads.config.yaml
 ```
 
-## 3) See workloads
+The main configuration is `dcperf_scripts/config/dcperf_config.yaml`. Set the
+experiment name, results directory, telemetry settings, and enabled workloads.
+
+## 2. Install
 
 ```bash
-python /home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/dcperf.py list
+sudo python dcperf_scripts/run_setup.py
 ```
 
-## 4) Dry-run a full execution
+Use `python dcperf_scripts/run_setup.py --help` for `--workload`, `--force`,
+`--resume`, `--verify`, and `--dry-run` options. `--verify` checks the host and
+workload artifacts without installing or modifying the configuration.
+
+## 3. Validate and preview
 
 ```bash
-python /home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/dcperf.py run --all --dry-run
+python dcperf_scripts/run_health_check.py --dry-run
+python dcperf_scripts/run_workloads.py --show-config
+python dcperf_scripts/run_workloads.py --dry-run
 ```
 
-## 5) Run an experiment
+## 4. Run workloads
+
+Run one workload directly:
 
 ```bash
-python /home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/dcperf.py run \
-  --workload mediawiki \
+python dcperf_scripts/run_mediawiki.py --runs 3 --experiment my_test
+```
+
+Run a selected group:
+
+```bash
+python dcperf_scripts/run_workloads.py \
+  --workloads mediawiki,feedsim,tao_bench \
   --iterations 3 \
-  --experiment my_test
+  --experiment my_test \
+  --emon --perf --cores 16,32,64
 ```
 
-## 6) Run health checks and tuning
+Replace `run_mediawiki.py` with `run_feedsim.py`, `run_django_workload.py`,
+`run_spark_standalone.py`, `run_tao_bench.py`, or
+`run_video_transcode_bench.py` for the other primary workloads.
 
-```bash
-python /home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/dcperf.py check
-python /home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/dcperf.py tune
-```
+## 5. Results and troubleshooting
 
-## 7) Summarize results
+Results are written under the configured results directory. Use
+`dcperf_scripts/README.md` for the full result layout, telemetry options,
+workload-specific settings, and troubleshooting guidance.
 
-```bash
-python /home/runner/work/Internal_DCPERF/Internal_DCPERF/dcperf_scripts/dcperf.py results --experiment my_test
-```
+The lower-level compatibility entry points `dcperf.py` and `dcperf_run.py`
+remain available for existing automation, but the `run_*.py` launchers are the
+documented interface.
 
 ## Exit Codes
 

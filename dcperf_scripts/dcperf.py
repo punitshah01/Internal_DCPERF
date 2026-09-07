@@ -92,6 +92,7 @@ def _run_command(args: argparse.Namespace, config: Dict[str, Any], logger) -> in
         raise ConfigError("No workloads selected. Use --workload, --all, or configure workloads.enabled")
 
     cmd: List[str] = [sys.executable, str(SCRIPT_DIR / "dcperf_run.py"), "--run-only"]
+    cmd.extend(["--config", str(args.config)])
     for workload in workloads:
         cmd.extend(["--workload", workload])
 

@@ -31,12 +31,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DCPERF_SCRIPTS_ROOT = SCRIPT_DIR.parent
+DCPERF_SCRIPTS_ROOT = SCRIPT_DIR
 if str(DCPERF_SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(DCPERF_SCRIPTS_ROOT))
 
 from modules.dcperf_config_manager import ConfigManager
-from modules.dcperf_core_scaler import get_online_cores, get_total_cores
+from modules.dcperf_core_scaler import get_online_cores, get_total_cores, scale_generator
+from modules.dcperf_core_scaler import get_online_cores, get_total_cores, restore_core_state, scale_generator
 from modules.dcperf_cpu_monitor import CpuMonitor
 from modules.dcperf_emon_manager import EmonManager
 from modules.dcperf_logger import get_logger
@@ -45,12 +46,24 @@ from modules.dcperf_os_tuner import capture_baseline as capture_os_tuning_baseli
 from modules.dcperf_os_tuner import restore_baseline as restore_os_tuning_baseline
 from modules.dcperf_perf_collector import PerfCollector
 from modules.dcperf_result_manager import ResultManager
+from modules.dcperf_system_check import detect_system
 from modules.dcperf_tmc import TmcRunner
 
 # Module-level global so the signal handler can reach the running
 # benchpress subprocess regardless of which wrapper instance started it.
 _current_proc: Optional[subprocess.Popen] = None
 _active_wrapper: Optional["BaseWrapper"] = None
+
+
+def _parse_core_counts(value: str) -> List[int]:
+    """Parse ``--cores 16,32,64`` while retaining a useful argparse error."""
+    try:
+        counts = [int(item.strip()) for item in value.split(",") if item.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("cores must be a comma-separated list of positive integers") from exc
+    if not counts or any(count <= 0 for count in counts):
+        raise argparse.ArgumentTypeError("cores must contain positive integers")
+    return counts
 
 
 def _signal_dispatch(signum, frame):
@@ -69,16 +82,31 @@ class BaseWrapper(ABC):
     def __init__(self, argv: Optional[List[str]] = None):
         global _active_wrapper
 
-        self.logger = get_logger(self.get_workload_name(), DCPERF_SCRIPTS_ROOT / "logs")
         self.args = self._build_arg_parser().parse_args(argv)
+        if self.args.cores and hasattr(self.args, "core_scaling"):
+            self.args.core_scaling = True
 
-        config_path = DCPERF_SCRIPTS_ROOT / "config" / "dcperf_config.yaml"
-        self.config_manager = ConfigManager(config_path, self.logger)
+        self.logger = get_logger(
+            self.get_workload_name(),
+            DCPERF_SCRIPTS_ROOT / "logs",
+            log_level="DEBUG" if self.args.verbose else "INFO",
+            experiment=self.args.experiment,
+        )
+        config_path = self.args.config or DCPERF_SCRIPTS_ROOT / "config" / "dcperf_config.yaml"
+        self.config_manager = ConfigManager(config_path, self.logger, persist=not self.args.no_save_config)
         self.config: Dict[str, Any] = self.config_manager.load()
+        if self.args.verbose:
+            self.logger.setLevel("DEBUG")
+        if self.args.perf:
+            self.args.metric = "perf"
 
         self._apply_emon_flag_validation()
 
-        results_base = Path(self.config.get("results_base_dir") or (DCPERF_SCRIPTS_ROOT / "results"))
+        results_base = Path(
+            self.args.results_dir
+            or self.config.get("results_base_dir")
+            or (DCPERF_SCRIPTS_ROOT / "results")
+        )
         self.result_manager = ResultManager(results_base, self.logger)
 
         self.emon_manager = EmonManager(self.config, self.logger, dry_run=self.args.dry_run)
@@ -93,6 +121,7 @@ class BaseWrapper(ABC):
         )
         self._emon_output_file: Optional[Path] = None
         self._emon_process: Optional[subprocess.Popen] = None
+        self._perf_process: Optional[subprocess.Popen] = None
         self._emon_error: str = ""
         self._emon_status: str = ""
         self._rows: List[Dict[str, Any]] = []
@@ -100,6 +129,7 @@ class BaseWrapper(ABC):
         self._cpu_monitor_result: Dict[str, Any] = {}
         self._tmc_result_dir: str = ""
         self._os_tuning_baseline: Optional[Dict[str, Optional[str]]] = None
+        self._core_online_baseline = get_online_cores()
 
         _active_wrapper = self
 
@@ -133,9 +163,26 @@ class BaseWrapper(ABC):
 
     @classmethod
     def _build_arg_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(description=f"{cls.__name__} DCPerf wrapper")
+        parser = cls.get_base_parser()
+        cls.add_arguments(parser)
+        return parser
+
+    @classmethod
+    def get_base_parser(cls) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(
+            description=f"{cls.__name__} DCPerf runner",
+            conflict_handler="resolve",
+        )
         parser.add_argument("--dry-run", "-dr", action="store_true", help="Show commands without executing")
+        parser.add_argument("--config", type=Path, default=None, help="Path to the DCPerf YAML config")
+        parser.add_argument("--no-save-config", action="store_true", help=argparse.SUPPRESS)
+        parser.add_argument("--results-dir", type=Path, default=None, help="Override the results directory")
         parser.add_argument("--emon", "-e", action="store_true", help="Enable EMON telemetry collection")
+        parser.add_argument("--perf", action="store_true", help="Collect Linux perf data during the workload")
+        parser.add_argument("--tune-os", dest="tune_os", action="store_true", help="Enable OS tuning (default)")
+        parser.add_argument("--no-tune-os", dest="tune_os", action="store_false", help="Disable OS tuning")
+        parser.set_defaults(tune_os=True)
+        parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
         parser.add_argument("--socket-view", "-sv", action="store_true", help="Enable EMON socket view")
         parser.add_argument("--core-view", "-cv", action="store_true", help="Enable EMON core view (default)")
         parser.add_argument("--uncore-view", "-uv", action="store_true", help="Enable EMON uncore view")
@@ -143,8 +190,8 @@ class BaseWrapper(ABC):
         parser.add_argument("--experiment", default="", help="Experiment name injected by WLC (default: '')")
         parser.add_argument("--orch-run-id", default="", help="Orchestrator run id injected by WLC (default: '')")
         parser.add_argument("--metric", choices=["emon", "perf", "none"], default="none", help="Telemetry collection mode")
-        parser.add_argument("--runs", type=int, default=None, help="Number of runs (default from config)")
-        parser.add_argument("--cores", type=int, default=None, help="Number of cores to enable before running")
+        parser.add_argument("--runs", "--iterations", dest="runs", type=int, default=None, help="Number of runs (default from config)")
+        parser.add_argument("--cores", type=_parse_core_counts, default=None, help="Core counts, e.g. 16,32,64")
         parser.add_argument("--force", "-f", action="store_true", help="Force reinstall (passed through to benchpress_cli.py install -f)")
         tmc_group = parser.add_argument_group("TMC telemetry (EMON collection + upload)")
         tmc_group.add_argument("-ue", "--upload-emon", action="store_true", help="Collect EMON and upload to TMC (implies -e/--emon)")
@@ -158,7 +205,6 @@ class BaseWrapper(ABC):
         tmc_group.add_argument("--tmc-group", "-G", default=None, help="TMC session group/prefix tag")
         tmc_group.add_argument("--tmc-tools", "-T", default=None, help="TMC tools, e.g. emon,sar or emon,iostat")
         tmc_group.add_argument("--ramp-timeout", "-rt", type=int, default=None, help="TMC ramp timeout in seconds")
-        cls.add_arguments(parser)
         return parser
 
     @classmethod
@@ -190,6 +236,14 @@ class BaseWrapper(ABC):
 
     def validate_config(self) -> None:
         """Default no-op; subclasses override to require() workload-specific keys."""
+
+    def validate_environment(self) -> None:
+        """Run lightweight host detection before workload-specific validation."""
+        if not self.args.dry_run:
+            info = detect_system(self.logger)
+            if not info.has_sudo:
+                self.logger.warning("base_wrapper: sudo access was not detected")
+        self.validate_config()
 
     def get_job_vars(self) -> Dict[str, Any]:
         """Job vars to forward to benchpress as `-i '{...}'` (jobs.yml template substitution).
@@ -255,13 +309,17 @@ class BaseWrapper(ABC):
                 self._emon_status = "FAILED"
                 self.logger.error("base_wrapper: %s", self._emon_error)
 
-    def pre_run(self) -> Dict[str, Any]:
+    def apply_os_tuning(self) -> Dict[str, Any]:
         """Apply the workload-specific OS tuning profile and record it.
 
         Subclasses that need extra pre-run steps (patches, prerequisite
         checks, dataset prep) should override pre_run(), do their own work,
         then call super().pre_run() to still get tuning applied/recorded.
         """
+        if not self.args.tune_os:
+            self.logger.info("base_wrapper: OS tuning disabled by --no-tune-os")
+            return {}
+
         self._os_tuning_baseline = capture_os_tuning_baseline(self.get_workload_name(), self.logger)
         tuning_results = apply_all_os_tuning(self.get_workload_name(), self.config, self.logger, self.args.dry_run)
         if self.run_dir is not None:
@@ -272,6 +330,10 @@ class BaseWrapper(ABC):
             self.cpu_monitor.start()
 
         return tuning_results
+
+    def pre_run(self) -> Dict[str, Any]:
+        """Compatibility hook for subclasses; delegates to shared OS tuning."""
+        return self.apply_os_tuning()
 
     def post_run(self) -> None:
         """Hook for post-run cleanup. Restores pre-tuning OS settings, then stops
@@ -293,6 +355,9 @@ class BaseWrapper(ABC):
             if self._cpu_monitor_result.get("within_target") is False:
                 self.logger.warning("base_wrapper: %s", self._cpu_monitor_result.get("warning"))
 
+        if not getattr(self.args, "core_scaling", False):
+            self.restore_core_baseline()
+
     def get_benchpress_global_args(self) -> List[str]:
         """Optional `-b <benchmarks_file>` / `-j <jobs_file>` overrides.
 
@@ -309,6 +374,16 @@ class BaseWrapper(ABC):
         window. CLI flags take precedence over anything returned here.
         """
         return {}
+
+    def core_scaling_counts(self, total_cores: int, step: int) -> List[int]:
+        """Return explicit ``--cores`` values or the workload's legacy sweep."""
+        if self.args.cores:
+            return list(self.args.cores)
+        return list(scale_generator(step, total_cores, step))
+
+    def restore_core_baseline(self) -> None:
+        if self._core_online_baseline:
+            restore_core_state(self._core_online_baseline, self.logger, self.args.dry_run)
 
     def _resolve_tmc_profile(self) -> Dict[str, Any]:
         profile = dict(self.get_tmc_profile())
@@ -404,6 +479,10 @@ class BaseWrapper(ABC):
         self._copy_benchpress_log(dcperf_root)
         return rc, stdout, stderr
 
+    def execute_benchpress(self, job: str, extra_args: List[str]) -> Tuple[int, str, str]:
+        """Template-method name for the shared Benchpress execution step."""
+        return self.run_benchpress(job, extra_args)
+
     def _copy_benchpress_log(self, dcperf_root: Optional[str]) -> None:
         """Preserve benchpress's own log (every line from process start, unlike
         the WARNING-only console/tee capture) into the run directory.
@@ -494,6 +573,15 @@ class BaseWrapper(ABC):
             return 1, "", str(exc)
 
         _current_proc = proc
+        if self.args.metric == "perf" and self.run_dir is not None:
+            configured_events = self.config.get("perf_events", [])
+            if isinstance(configured_events, str):
+                configured_events = [item.strip() for item in configured_events.split(",") if item.strip()]
+            self._perf_process = self.perf_collector.start_perf(
+                proc.pid,
+                str(self.run_dir / "perf.data"),
+                list(configured_events or []),
+            )
         captured: List[str] = []
         try:
             assert proc.stdout is not None
@@ -503,11 +591,17 @@ class BaseWrapper(ABC):
                 captured.append(line)
             proc.wait()
         finally:
+            if self._perf_process is not None:
+                self.perf_collector.stop_perf(self._perf_process)
+                self._perf_process = None
             _current_proc = None
 
         return proc.returncode, "".join(captured), ""
 
     def stop_telemetry(self) -> None:
+        if self._perf_process is not None:
+            self.perf_collector.stop_perf(self._perf_process)
+            self._perf_process = None
         if self._emon_process is not None:
             self.emon_manager.stop_emon(self._emon_process)
             self._emon_process = None
@@ -632,6 +726,10 @@ class BaseWrapper(ABC):
             self.logger.warning("base_wrapper: could not parse benchpress Results Report JSON")
             return {}
 
+    def parse_workload_metrics(self, stdout: str) -> Dict[str, Any]:
+        """Template-method name for workload-specific output parsing."""
+        return self.parse_output(stdout)
+
     # ------------------------------------------------------------------
     # Signal / failure safety
     # ------------------------------------------------------------------
@@ -650,7 +748,7 @@ class BaseWrapper(ABC):
 
         self.logger.warning("base_wrapper: received signal %s, killing subprocess tree", signum)
 
-        for proc in (self._emon_process, _current_proc):
+        for proc in (self._emon_process, self._perf_process, _current_proc):
             if proc is not None and proc.poll() is None:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -660,7 +758,12 @@ class BaseWrapper(ABC):
                     except Exception:
                         pass
         self._emon_process = None
+        self._perf_process = None
         _current_proc = None
+        try:
+            self.restore_core_baseline()
+        except Exception:
+            pass
 
         if self._os_tuning_baseline is not None:
             try:
@@ -670,6 +773,17 @@ class BaseWrapper(ABC):
             self._os_tuning_baseline = None
 
         if self.run_dir is not None:
+            try:
+                self.result_manager.write_csv_row(
+                    self.run_dir,
+                    {
+                        "status": "INTERRUPTED",
+                        "signal": signum,
+                        "output_dir": str(self.run_dir.resolve()),
+                    },
+                )
+            except Exception:
+                pass
             try:
                 self.result_manager.write_json_results(
                     self.run_dir,
@@ -688,7 +802,7 @@ class BaseWrapper(ABC):
         per-iteration summary block after each one. Returns 0 only if every
         iteration passed."""
         total_runs = self.args.runs if self.args.runs and self.args.runs > 0 else 1
-        self.validate_config()
+        self.validate_environment()
 
         overall_rc = 0
         iteration_statuses: List[str] = []
@@ -806,7 +920,7 @@ class BaseWrapper(ABC):
             job_vars = self.get_job_vars()
             if job_vars:
                 extra_args += ["-i", json.dumps(job_vars)]
-            returncode, stdout, stderr = self.run_benchpress(self.get_job_name(), extra_args)
+            returncode, stdout, stderr = self.execute_benchpress(self.get_job_name(), extra_args)
 
             self.result_manager.save_stdout(self.run_dir, stdout)
             self.result_manager.save_stderr(self.run_dir, stderr)
@@ -818,7 +932,7 @@ class BaseWrapper(ABC):
             if run_id and dcperf_root:
                 self.result_manager.copy_benchmark_metrics(dcperf_root, run_id, self.run_dir)
 
-            parsed = self.parse_output(stdout)
+            parsed = self.parse_workload_metrics(stdout)
             kpis = self.get_kpis(parsed)
             status = "PASS" if returncode == 0 else "FAIL"
             if status == "PASS" and not self.args.dry_run and not self._kpis_are_meaningful(kpis):
@@ -844,65 +958,69 @@ class BaseWrapper(ABC):
             # reported separately above/below and must never affect status,
             # which is decided by the benchmark's own KPIs/CPU utilization only.
 
-            emon_raw_dir = self.run_dir / "emon" / "emon_raw" if self.run_dir is not None else None
-            emon_processed_dir = self.run_dir / "emon" / "emon_processed" if self.run_dir is not None else None
-            row = dict(metadata)
-            row.update(kpis)
-            row["status"] = status
-            self._rows.append(
-                {
-                    "system": metadata,
-                    "params": {},
-                    "kpis": kpis,
-                    "status": status,
-                    "output_dir": str(self.run_dir) if self.run_dir is not None else "",
-                    "results_csv": str(self.run_dir / "results.csv") if self.run_dir is not None else "",
-                    "results_json": str(self.run_dir / "results.json") if self.run_dir is not None else "",
-                    "metrics_json": str(self.run_dir / "metrics.json") if self.run_dir is not None else "",
-                    "emon_collected": bool(self.args.emon or self.args.upload_emon),
-                    "emon_status": self._emon_status,
-                    "emon_error": self._emon_error,
-                    "emon_raw_dir": str(emon_raw_dir) if emon_raw_dir is not None else "",
-                    "emon_processed_dir": str(emon_processed_dir) if emon_processed_dir is not None else "",
-                    "tmc_result_dir": self._tmc_result_dir,
-                    "cpu_avg_pct": self._cpu_monitor_result.get("avg_overall_pct"),
-                }
-            )
-
-            try:
-                self.result_manager.write_csv_row(self.run_dir, row)
-            except Exception as exc:
-                self.logger.error("base_wrapper: FAILED to write results.csv: %s", exc)
-                raise
-
-            self.result_manager.write_json_results(
-                self.run_dir,
-                {
-                    "orch_run_id": self.args.orch_run_id,
-                    "tmc_result_dir": self._tmc_result_dir,
-                    "rows": self._rows,
-                },
-            )
-            metrics_payload = dict(kpis)
-            if self._cpu_monitor_result:
-                metrics_payload["cpu_utilization"] = self._cpu_monitor_result
-            self.result_manager.save_metrics(self.run_dir, metrics_payload)
-
-            if self.args.upload_emon and self._tmc_result_dir:
-                self.result_manager.write_tmc_upload_log(
-                    self.run_dir, f"tmc trace directory: {self._tmc_result_dir}"
-                )
-
-            try:
-                self.result_manager.append_to_consolidated(
-                    self.get_workload_name(), self._build_consolidated_row(metadata, kpis, status)
-                )
-            except Exception as exc:
-                self.logger.warning("base_wrapper: could not update consolidated_results.xlsx: %s", exc)
-
+            self.export_artifacts(metadata, kpis, status)
             self.print_summary(status, kpis)
 
         return (0 if status == "PASS" else 1), status, kpis
+
+    def export_artifacts(self, metadata: Dict[str, Any], kpis: Dict[str, Any], status: str) -> None:
+        """Write the standard CSV, JSON, metadata, telemetry, and workbook artifacts."""
+        if self.run_dir is None:
+            return
+        emon_raw_dir = self.run_dir / "emon" / "emon_raw"
+        emon_processed_dir = self.run_dir / "emon" / "emon_processed"
+        row = dict(metadata)
+        row.update(kpis)
+        row["status"] = status
+        self._rows.append(
+            {
+                "system": metadata,
+                "params": {},
+                "kpis": kpis,
+                "status": status,
+                "output_dir": str(self.run_dir),
+                "results_csv": str(self.run_dir / "results.csv"),
+                "results_json": str(self.run_dir / "results.json"),
+                "metrics_json": str(self.run_dir / "metrics.json"),
+                "emon_collected": bool(self.args.emon or self.args.upload_emon),
+                "emon_status": self._emon_status,
+                "emon_error": self._emon_error,
+                "emon_raw_dir": str(emon_raw_dir),
+                "emon_processed_dir": str(emon_processed_dir),
+                "tmc_result_dir": self._tmc_result_dir,
+                "cpu_avg_pct": self._cpu_monitor_result.get("avg_overall_pct"),
+            }
+        )
+        try:
+            self.result_manager.write_csv_row(self.run_dir, row)
+        except Exception as exc:
+            self.logger.error("base_wrapper: FAILED to write results.csv: %s", exc)
+            raise
+
+        self.result_manager.write_json_results(
+            self.run_dir,
+            {
+                "orch_run_id": self.args.orch_run_id,
+                "tmc_result_dir": self._tmc_result_dir,
+                "rows": self._rows,
+            },
+        )
+        metrics_payload = dict(kpis)
+        if self._cpu_monitor_result:
+            metrics_payload["cpu_utilization"] = self._cpu_monitor_result
+        self.result_manager.save_metrics(self.run_dir, metrics_payload)
+
+        if self.args.upload_emon and self._tmc_result_dir:
+            self.result_manager.write_tmc_upload_log(
+                self.run_dir, f"tmc trace directory: {self._tmc_result_dir}"
+            )
+
+        try:
+            self.result_manager.append_to_consolidated(
+                self.get_workload_name(), self._build_consolidated_row(metadata, kpis, status)
+            )
+        except Exception as exc:
+            self.logger.warning("base_wrapper: could not update consolidated_results.xlsx: %s", exc)
 
     def _build_consolidated_row(self, metadata: Dict[str, Any], kpis: Dict[str, Any], status: str) -> Dict[str, Any]:
         """Assemble one consolidated_results.xlsx row from this run's metadata/KPIs."""

@@ -91,6 +91,9 @@ def set_core_count(n: int, logger, dry_run: bool = False) -> bool:
     """
     total = get_total_cores()
     if n < 1 or n > total:
+        if dry_run and total == 0:
+            logger.info("core_scaler: [dry-run] would set core count to %s", n)
+            return True
         logger.error("core_scaler: requested core count %s out of range (1..%s)", n, total)
         return False
 
@@ -114,3 +117,11 @@ def scale_generator(start: int, end: int, step: int) -> Iterator[int]:
         yield current
         current += step
     yield end
+
+def restore_core_state(original_online: List[int], logger, dry_run: bool = False) -> bool:
+    """Restore the exact online CPU set captured before a scaling sweep."""
+    original = set(original_online)
+    current = set(get_online_cores())
+    ok = enable_cores(sorted(original - current), logger, dry_run)
+    ok = disable_cores(sorted(current - original), logger, dry_run) and ok
+    return ok

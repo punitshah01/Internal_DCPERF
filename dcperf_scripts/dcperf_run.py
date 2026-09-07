@@ -35,21 +35,14 @@ from modules.dcperf_logger import get_logger
 from modules.dcperf_resource_manager import ResourceManager, TRACKED_KERNEL_KEYS, read_sysctl
 from modules.dcperf_result_manager import ResultManager, collect_dcperf_score
 
-# Wrapper classes are imported via the `wrappers.` package path, but each
-# wrapper module itself resolves its `BaseWrapper` base class through a
-# bare (non-package) import of modules/wrappers/dcperf_base_wrapper.py —
-# see the sys.path handling at the top of every wrappers/*.py file. Avoid a
-# second, distinct `wrappers.dcperf_base_wrapper` import here so
-# isinstance/class-identity stays consistent with the one actually used by
-# the wrapper subclasses.
-from wrappers.dcperf_django_wrapper import DjangoWrapper
-from wrappers.dcperf_feedsim_wrapper import FeedsimWrapper
-from wrappers.dcperf_health_check_wrapper import HealthCheckWrapper
-from wrappers.dcperf_mediawiki_wrapper import MediaWikiWrapper
-from wrappers.dcperf_spark_wrapper import SparkWrapper
-from wrappers.dcperf_tao_bench_wrapper import TaoBenchWrapper
-from wrappers.dcperf_video_transcode_wrapper import VideoWrapper
-from wrappers.dcperf_wdl_bench_wrapper import WdlBenchWrapper
+from run_django_workload import DjangoWrapper
+from run_feedsim import FeedsimWrapper
+from run_health_check import HealthCheckWrapper
+from run_mediawiki import MediaWikiWrapper
+from run_spark_standalone import SparkWrapper
+from run_tao_bench import TaoBenchWrapper
+from run_video_transcode_bench import VideoWrapper
+from run_wdl_bench import WdlBenchWrapper
 
 # Single source of truth: workload name -> wrapper class. Adding a new
 # workload only requires one new entry here (plus its wrapper file).
@@ -85,7 +78,7 @@ _ANSI_YELLOW = "\033[33m"
 _ANSI_RED = "\033[31m"
 _ANSI_RESET = "\033[0m"
 
-# Ctrl+C/SIGTERM handling is owned entirely by wrappers/dcperf_base_wrapper.py's
+# Ctrl+C/SIGTERM handling is owned entirely by run_base.py's
 # _signal_dispatch (kills the tracked subprocess tree and exits 130). This
 # module must not register its own handler -- a second signal.signal() call
 # here would silently replace that one and swallow every Ctrl+C instead.
@@ -156,9 +149,8 @@ def _workload_install_satisfied(
 
 _OS_PREREQ_COMMANDS: Dict[str, List[List[str]]] = {
     "centos8": [
-        ["dnf", "install", "-y", "python38", "python38-pip", "git"],
+        ["dnf", "install", "-y", "gcc", "gcc-c++", "make", "cmake", "git", "python38", "python38-devel", "python38-pip", "numactl", "sysstat", "hwloc", "dmidecode", "pciutils", "xz-devel"],
         ["alternatives", "--set", "python3", "/usr/bin/python3.8"],
-        ["pip-3.8", "install", "click", "pyyaml", "tabulate", "pandas"],
         ["dnf", "install", "-y", "epel-release"],
         ["dnf", "install", "-y", "dnf-command(config-manager)"],
         ["dnf", "config-manager", "--set-enabled", "PowerTools"],
@@ -167,15 +159,42 @@ _OS_PREREQ_COMMANDS: Dict[str, List[List[str]]] = {
         ["dnf", "install", "-y", "epel-release"],
         ["dnf", "install", "-y", "dnf-command(config-manager)"],
         ["dnf", "config-manager", "--set-enabled", "crb"],
-        ["dnf", "install", "-y", "git", "python3-click", "python3-pyyaml", "python3-tabulate", "python3-pip", "xz-devel"],
-        ["pip-3.9", "install", "pandas"],
+        ["dnf", "install", "-y", "gcc", "gcc-c++", "make", "cmake", "git", "python3", "python3-devel", "python3-pip", "numactl", "sysstat", "hwloc", "dmidecode", "pciutils", "xz-devel"],
     ],
     "ubuntu": [
         ["sudo", "apt", "update"],
-        ["sudo", "apt", "install", "-y", "python3-pip", "git"],
-        ["sudo", "pip3", "install", "click", "pyyaml", "tabulate", "pandas"],
+        ["sudo", "apt", "install", "-y", "build-essential", "cmake", "git", "python3", "python3-dev", "python3-pip", "numactl", "sysstat", "hwloc", "dmidecode", "pciutils"],
     ],
 }
+
+_VERIFY_COMMANDS = [
+    "bash", "git", "gcc", "g++", "make", "cmake", "python3", "numactl",
+    "mpstat", "lstopo", "dmidecode", "lspci",
+]
+
+
+def _run_setup_command(cmd: List[str], logger, dry_run: bool, cwd: Optional[str] = None) -> bool:
+    """Run setup commands with live output and a useful failure message."""
+    logger.info("master_setup: %s", " ".join(cmd))
+    if dry_run:
+        return True
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            cwd=cwd,
+        )
+        if process.stdout is not None:
+            for line in process.stdout:
+                print(line, end="")
+                logger.debug("setup: %s", line.rstrip())
+        return process.wait() == 0
+    except OSError as exc:
+        logger.error("master_setup: could not run %s: %s", cmd[0], exc)
+        return False
 
 
 def install_os_prerequisites(logger, dry_run: bool, resume: bool, force: bool = False) -> bool:
@@ -199,13 +218,15 @@ def install_os_prerequisites(logger, dry_run: bool, resume: bool, force: bool = 
     logger.info("master_setup: installing OS prerequisites for %s", distro)
     ok = True
     for cmd in commands:
-        logger.info("master_setup: %s", " ".join(cmd))
-        if dry_run:
-            continue
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
-        except subprocess.CalledProcessError as exc:
-            logger.error("master_setup: OS prerequisite command failed: %s: %s", " ".join(cmd), exc.stderr)
+        if not _run_setup_command(cmd, logger, dry_run):
+            logger.error("master_setup: OS prerequisite command failed: %s", " ".join(cmd))
+            ok = False
+
+    requirements = SCRIPT_DIR / "requirements.txt"
+    if requirements.exists():
+        pip_cmd = [sys.executable, "-m", "pip", "install", "-r", str(requirements)]
+        if not _run_setup_command(pip_cmd, logger, dry_run):
+            logger.error("master_setup: Python dependency installation failed")
             ok = False
 
     if ok and not dry_run:
@@ -422,7 +443,9 @@ def _run_benchpress_system_check(config: Dict[str, Any], logger, dry_run: bool) 
     return "PASS", ""
 
 
-def run_preflight_checks(config: Dict[str, Any], logger, dry_run: bool) -> bool:
+def run_preflight_checks(
+    config: Dict[str, Any], logger, dry_run: bool, interactive: bool = True
+) -> bool:
     """Print the DCPerf Preflight Check table; return False only if the user
     declines to continue after a FAIL (dry-run always continues).
     """
@@ -465,6 +488,8 @@ def run_preflight_checks(config: Dict[str, Any], logger, dry_run: bool) -> bool:
         if dry_run:
             logger.warning("preflight: FAIL(s) detected but --dry-run set, continuing")
             return True
+        if not interactive:
+            return False
         answer = input("One or more preflight checks FAILED. Continue anyway? (y/n): ").strip().lower()
         return answer == "y"
 
@@ -479,6 +504,7 @@ def _install_workload(workload: str, wrapper_cls: Type[Any], config: Dict[str, A
     if not dcperf_root:
         logger.error("master_setup: dcperf_root not configured, cannot install %s", workload)
         return False
+
 
     if not _check_benchmark_installer(dcperf_root, workload, logger):
         return False
@@ -522,13 +548,41 @@ def _install_workload(workload: str, wrapper_cls: Type[Any], config: Dict[str, A
     if dry_run:
         return True
 
-    try:
-        subprocess.run(cmd, check=True, start_new_session=True, cwd=dcperf_root)
-        _mark_installed(job_name)
+    if _run_setup_command(cmd, logger, dry_run, cwd=dcperf_root):
+        if not dry_run:
+            _mark_installed(job_name)
         return True
-    except subprocess.CalledProcessError as exc:
-        logger.error("master_setup: install failed for %s: %s", workload, exc)
+    else:
+        logger.error("master_setup: install failed for %s", workload)
         return False
+
+
+def verify_setup(
+    config: Dict[str, Any], workloads: List[str], logger, config_path: Path, dry_run: bool = False
+) -> bool:
+    """Check host tools, registries, and workload artifacts without mutation."""
+    ok = run_preflight_checks(config, logger, dry_run, interactive=False)
+    for command in _VERIFY_COMMANDS:
+        if shutil.which(command) is None:
+            logger.error("verify: required command is missing: %s", command)
+            ok = False
+        else:
+            logger.info("verify: command available: %s", command)
+
+    dcperf_root = config.get("dcperf_root")
+    for workload in workloads:
+        wrapper_cls = WORKLOAD_REGISTRY[workload]
+        installer_ok = bool(dcperf_root) and _check_benchmark_installer(dcperf_root, workload, logger)
+        try:
+            wrapper = wrapper_cls(["--dry-run", "--no-save-config", "--config", str(config_path)])
+            artifact_ok = wrapper.is_install_satisfied()
+        except Exception as exc:
+            logger.error("verify: %s artifact check failed: %s", workload, exc)
+            artifact_ok = False
+        status = installer_ok and artifact_ok
+        logger.info("verify: %s: %s", workload, "PASS" if status else "FAIL")
+        ok = status and ok
+    return ok
 
 
 def _run_workload(
@@ -596,6 +650,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-only", action="store_true", help="Only run selected workloads (skip install)")
     parser.add_argument("--workload", action="append", default=[], choices=list(WORKLOAD_REGISTRY.keys()), help="Select one workload (repeatable)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
+    parser.add_argument("--verify", action="store_true", help="Verify tools, registries, and workload artifacts without installing")
+    parser.add_argument("--config", type=Path, default=SCRIPT_DIR / "config" / "dcperf_config.yaml", help="Path to the DCPerf YAML config")
     parser.add_argument("--resume", action="store_true", help="Skip already-installed workloads")
     parser.add_argument("-e", "--emon", action="store_true", help="Enable EMON telemetry for all selected workloads")
     parser.add_argument("-ue", "--upload-emon", action="store_true", help="Collect EMON and upload to TMC for all selected workloads (implies -e)")
@@ -607,7 +663,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detailed-view", "-dv", action="store_true", help="Enable EMON detailed/thread view")
     parser.add_argument("--emon-views", "-w", default=None, help="TMC views, e.g. core,uncore")
     parser.add_argument("--experiment", type=str, default=None, help="Experiment name for grouping related sessions. Creates results/<workload>/<experiment>/session_NNN_<timestamp>/. If omitted, defaults to exp_YYYYMMDD.")
-    parser.add_argument("--runs", type=int, default=None, help="Number of runs per workload (passed to wrappers)")
+    parser.add_argument("--runs", "--iterations", dest="runs", type=int, default=None, help="Number of runs per workload")
+    parser.add_argument("--cores", default=None, help="Core counts, e.g. 16,32,64")
+    parser.add_argument("--perf", action="store_true", help="Collect Linux perf data")
+    parser.add_argument("--tune-os", dest="tune_os", action="store_true", help="Enable OS tuning (default)")
+    parser.add_argument("--no-tune-os", dest="tune_os", action="store_false", help="Disable OS tuning")
+    parser.set_defaults(tune_os=True)
+    parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging")
     parser.add_argument("--results-dir", type=Path, default=None, help="Override default results base directory. Default: dcperf_scripts/results/.")
     parser.add_argument("--force", "-f", action="store_true", help="Force reinstall: remove from dcperf_install_state.txt and pass -f to benchpress_cli.py install")
     return parser
@@ -628,15 +690,19 @@ def _selected_workloads(args: argparse.Namespace) -> List[str]:
     return ["health_check"] + selected
 
 
-def main() -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     # Keep master parser focused on orchestration flags while letting
     # workload wrappers own workload-specific options (e.g. --instances,
     # --mode, --runtime, --codecs, --tmc-alias).
-    args, passthrough_argv = build_arg_parser().parse_known_args()
+    args, passthrough_argv = build_arg_parser().parse_known_args(argv)
     logger = get_logger("dcperf_master_setup", SCRIPT_DIR / "logs")
 
-    config_manager = ConfigManager(SCRIPT_DIR / "config" / "dcperf_config.yaml", logger)
+    config_manager = ConfigManager(args.config, logger)
     config = config_manager.load()
+
+    workloads = _selected_workloads(args)
+    if args.verify:
+        return 0 if verify_setup(config, workloads, logger, args.config, args.dry_run) else 1
 
     if args.upload_emon:
         args.emon = True
@@ -684,7 +750,6 @@ def main() -> int:
             logger.error("master_setup: OS prerequisite installation failed")
             return 1
 
-    workloads = _selected_workloads(args)
     result_manager = ResultManager(
         args.results_dir or Path(config.get("results_base_dir") or (SCRIPT_DIR / "results")), logger,
     )
@@ -730,6 +795,18 @@ def main() -> int:
             extra_argv += ["--experiment", args.experiment]
         if args.runs is not None:
             extra_argv += ["--runs", str(args.runs)]
+        if args.config:
+            extra_argv += ["--config", str(args.config)]
+        if args.results_dir:
+            extra_argv += ["--results-dir", str(args.results_dir)]
+        if args.cores:
+            extra_argv += ["--cores", args.cores]
+        if args.perf:
+            extra_argv.append("--perf")
+        if not args.tune_os:
+            extra_argv.append("--no-tune-os")
+        if args.verbose:
+            extra_argv.append("--verbose")
 
         # Forward unknown args from the master CLI to the selected workload
         # wrapper parser.

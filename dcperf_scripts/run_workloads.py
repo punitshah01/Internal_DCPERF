@@ -55,14 +55,12 @@ EXAMPLE_CONFIG_PATH = SCRIPT_DIR / "run_workloads.config.example.yaml"
 DCPERF_RUN = SCRIPT_DIR / "dcperf_run.py"
 DURATION_HISTORY_PATH = SCRIPT_DIR / "logs" / "run_workloads" / "workload_durations.json"
 
+from dcperf_run import WORKLOAD_REGISTRY
+
 # Canonical workload names and their order when none is specified in config.
 ALL_WORKLOADS: List[str] = [
-    "mediawiki",
-    "feedsim",
-    "tao_bench",
-    "video_transcode_bench",
-    "django_workload",
-    "spark_standalone",
+    workload for workload in WORKLOAD_REGISTRY
+    if workload not in {"health_check", "wdl_bench"}
 ]
 CODECS: List[str] = ["svt", "aom", "x264"]
 VIDEO_TRANSCODE_VARIANT_MAP: Dict[str, Dict[str, str]] = {
@@ -264,7 +262,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=f"Path to YAML config file (default: {DEFAULT_CONFIG_PATH})",
     )
     parser.add_argument(
-        "--workload-list",
+        "--workload-list", "--workloads",
         type=str,
         default=None,
         metavar="W1,W2,...",
@@ -276,6 +274,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Disable EMON collection (overrides config global.no_emon)",
     )
+    parser.add_argument(
+        "--emon",
+        action="store_true",
+        default=None,
+        help="Enable EMON collection (overrides config global.no_emon)",
+    )
+    parser.add_argument("--perf", action="store_true", help="Collect Linux perf data in child runners")
+    parser.add_argument("--cores", default=None, help="Core counts for child runners, e.g. 16,32,64")
+    parser.add_argument("--tune-os", dest="tune_os", action="store_true", help="Enable OS tuning in child runners")
+    parser.add_argument("--no-tune-os", dest="tune_os", action="store_false", help="Disable OS tuning in child runners")
+    parser.set_defaults(tune_os=None)
     parser.add_argument(
         "--iterations",
         type=int,
@@ -350,7 +359,9 @@ def resolve_settings(config: Dict[str, Any], args: argparse.Namespace) -> Dict[s
     g = config.get("global", {}) or {}
 
     # no_emon: config default is True (no emon); CLI --no-emon also sets True.
-    if args.no_emon is not None:
+    if args.emon:
+        no_emon = False
+    elif args.no_emon is not None:
         no_emon = args.no_emon
     else:
         no_emon = bool(g.get("no_emon", True))
@@ -373,6 +384,9 @@ def resolve_settings(config: Dict[str, Any], args: argparse.Namespace) -> Dict[s
         "workloads": workloads,
         "workload_cfg": config.get("workloads", {}) or {},
         "dry_run": args.dry_run,
+        "perf": args.perf,
+        "cores": args.cores,
+        "tune_os": args.tune_os,
     }
 
 
@@ -395,6 +409,12 @@ def build_workload_command(workload: str, settings: Dict[str, Any], session_name
 
     if not settings["no_emon"]:
         cmd.append("--emon")
+    if settings["perf"]:
+        cmd.append("--perf")
+    if settings["cores"]:
+        cmd += ["--cores", str(settings["cores"])]
+    if settings["tune_os"] is False:
+        cmd.append("--no-tune-os")
 
     if settings["experiment"]:
         cmd += ["--experiment", settings["experiment"]]
