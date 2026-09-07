@@ -244,12 +244,7 @@ rm -rf ./*
 
 # Build FeedSim
 FS_CFLAGS="${BP_CFLAGS:--O3 -DNDEBUG}"
-# -Wno-deprecated-declarations: Folly's F14 vector-policy map (used by
-# gapbs/pagerank.cpp) always warns here on newer GCC; it is a real, harmless
-# warning, not the build failure, but it drowns out the actual error in ninja's
-# interleaved parallel output, so silence it instead of letting it get
-# mistaken for the fatal error on every retry.
-FS_CXXFLAGS="${BP_CXXFLAGS:--O3 -DNDEBUG} -Wno-deprecated-declarations"
+FS_CXXFLAGS="${BP_CXXFLAGS:--O3 -DNDEBUG }"
 FS_LDFLAGS="${BP_LDFLAGS:-} -latomic -Wl,--export-dynamic"
 
 cmake -G Ninja \

@@ -67,8 +67,10 @@ class PageRank {
  private:
   CSRGraph<int32_t> graph_;
   int num_pvectors_entries_;
-  folly::F14FastMap<int, pvector<float>> scores_pvectors_map_;
-  folly::F14FastMap<int, pvector<float>> outgoing_pvectors_map_;
+  // F14NodeMap (not F14FastMap): pvector<float>'s move constructor is not
+  // noexcept, which F14FastMap's vector policy requires for safe relocation.
+  folly::F14NodeMap<int, pvector<float>> scores_pvectors_map_;
+  folly::F14NodeMap<int, pvector<float>> outgoing_pvectors_map_;
 };
 
 } // namespace dwarfs
