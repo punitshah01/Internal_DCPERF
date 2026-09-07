@@ -166,7 +166,29 @@ class MediaWikiWrapper(BaseWrapper):
                 subprocess.run(["wget", "-q", url, "-O", str(archive)], check=True, capture_output=True, text=True)
                 subprocess.run(["tar", "-Jxf", str(archive), "-C", tmp], check=True, capture_output=True, text=True)
                 hhvm_dir = Path(tmp) / "hhvm"
-                subprocess.run(["sudo", "./pour-hhvm.sh"], check=True, cwd=str(hhvm_dir), capture_output=True, text=True)
+                install_env = os.environ.copy()
+                hhvm_lib = "/opt/local/hhvm-3.30/lib"
+                install_env["LD_LIBRARY_PATH"] = (
+                    f"{hhvm_lib}:{install_env['LD_LIBRARY_PATH']}"
+                    if install_env.get("LD_LIBRARY_PATH")
+                    else hhvm_lib
+                )
+                install_env["PATH"] = "/usr/local/bin:/usr/bin:/bin:" + install_env.get("PATH", "")
+                subprocess.run(
+                    ["sudo", "env", f"LD_LIBRARY_PATH={install_env['LD_LIBRARY_PATH']}",
+                     f"PATH={install_env['PATH']}", "./pour-hhvm.sh"],
+                    check=True,
+                    cwd=str(hhvm_dir),
+                    capture_output=True,
+                    text=True,
+                    env=install_env,
+                )
+                if not _HHVM_MARKER_PATH.exists():
+                    self.logger.error(
+                        "mediawiki_wrapper: HHVM installer completed but %s was not created",
+                        _HHVM_MARKER_PATH,
+                    )
+                    return False
                 return True
             except subprocess.CalledProcessError as exc:
                 self.logger.error("mediawiki_wrapper: HHVM install failed: %s", exc.stderr)
