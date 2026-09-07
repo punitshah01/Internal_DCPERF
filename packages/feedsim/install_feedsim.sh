@@ -237,6 +237,11 @@ fi
 
 mkdir -p build && cd build/
 
+# The staging directory contains generated CMake package files. Reusing it
+# after an interrupted or older install can leave invalid FollyConfig paths
+# such as //include, so regenerate all external-project metadata from scratch.
+rm -rf ./*
+
 # Build FeedSim
 FS_CFLAGS="${BP_CFLAGS:--O3 -DNDEBUG}"
 FS_CXXFLAGS="${BP_CXXFLAGS:--O3 -DNDEBUG }"
