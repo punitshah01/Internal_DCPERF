@@ -31,6 +31,9 @@ ExternalProject_Add(folly
     BUILD_BYPRODUCTS <INSTALL_DIR>/lib/libfolly.a
     BUILD_COMMAND
         cmake --build .
+    INSTALL_COMMAND
+        ${CMAKE_COMMAND} --build <BINARY_DIR> --target install
+        COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/fix-folly-config.sh <INSTALL_DIR>
     )
 add_dependencies(folly fmt)
 
