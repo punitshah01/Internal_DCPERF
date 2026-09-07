@@ -181,8 +181,13 @@ do
     REPO="$(echo "$submod" | cut -d ' ' -f 1)"
     COMMIT="$(echo "$submod" | cut -d ' ' -f 2)"
     SUBMOD_DIR="$(echo "$submod" | cut -d ' ' -f 3)"
-    mkdir -p "${SUBMOD_DIR}"
-    git clone "${REPO}" "${SUBMOD_DIR}"
+    if [ -d "${SUBMOD_DIR}/.git" ]; then
+        git -C "${SUBMOD_DIR}" fetch --quiet --all --tags
+    elif [ -e "${SUBMOD_DIR}" ]; then
+        die "FeedSim submodule path exists but is not a Git repository: ${SUBMOD_DIR}. Remove the stale directory and rerun install."
+    else
+        git clone "${REPO}" "${SUBMOD_DIR}"
+    fi
     pushd "${SUBMOD_DIR}"
     git checkout "${COMMIT}"
     popd
