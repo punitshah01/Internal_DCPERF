@@ -197,6 +197,18 @@ def _run_setup_command(cmd: List[str], logger, dry_run: bool, cwd: Optional[str]
         return False
 
 
+def _install_python_requirements(logger, dry_run: bool) -> bool:
+    requirements = SCRIPT_DIR / "requirements.txt"
+    if not requirements.exists():
+        logger.warning("master_setup: requirements file not found: %s", requirements)
+        return True
+    return _run_setup_command(
+        [sys.executable, "-m", "pip", "install", "-r", str(requirements)],
+        logger,
+        dry_run,
+    )
+
+
 def install_os_prerequisites(logger, dry_run: bool, resume: bool, force: bool = False) -> bool:
     """Run the official per-OS prerequisite install sequence (README "Install
     Prerequisites" section) for CentOS Stream 8/9 or Ubuntu 22.04.
@@ -207,7 +219,7 @@ def install_os_prerequisites(logger, dry_run: bool, resume: bool, force: bool = 
     if not force and _OS_PREREQS_MARKER_FILE.exists():
         reason = "--resume" if resume else "install marker present"
         logger.info("master_setup: OS prerequisites already installed, skipping (%s)", reason)
-        return True
+        return _install_python_requirements(logger, dry_run)
 
     distro = detect_distro()
     commands = _OS_PREREQ_COMMANDS.get(distro)
@@ -222,12 +234,9 @@ def install_os_prerequisites(logger, dry_run: bool, resume: bool, force: bool = 
             logger.error("master_setup: OS prerequisite command failed: %s", " ".join(cmd))
             ok = False
 
-    requirements = SCRIPT_DIR / "requirements.txt"
-    if requirements.exists():
-        pip_cmd = [sys.executable, "-m", "pip", "install", "-r", str(requirements)]
-        if not _run_setup_command(pip_cmd, logger, dry_run):
-            logger.error("master_setup: Python dependency installation failed")
-            ok = False
+    if not _install_python_requirements(logger, dry_run):
+        logger.error("master_setup: Python dependency installation failed")
+        ok = False
 
     if ok and not dry_run:
         _OS_PREREQS_MARKER_FILE.write_text(f"{distro}\n")
