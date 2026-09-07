@@ -244,7 +244,12 @@ rm -rf ./*
 
 # Build FeedSim
 FS_CFLAGS="${BP_CFLAGS:--O3 -DNDEBUG}"
-FS_CXXFLAGS="${BP_CXXFLAGS:--O3 -DNDEBUG }"
+# -Wno-deprecated-declarations: Folly's F14 vector-policy map (used by
+# gapbs/pagerank.cpp) always warns here on newer GCC; it is a real, harmless
+# warning, not the build failure, but it drowns out the actual error in ninja's
+# interleaved parallel output, so silence it instead of letting it get
+# mistaken for the fatal error on every retry.
+FS_CXXFLAGS="${BP_CXXFLAGS:--O3 -DNDEBUG} -Wno-deprecated-declarations"
 FS_LDFLAGS="${BP_LDFLAGS:-} -latomic -Wl,--export-dynamic"
 
 cmake -G Ninja \
@@ -255,4 +260,16 @@ cmake -G Ninja \
     -DCMAKE_CXX_FLAGS_RELEASE="$FS_CXXFLAGS" \
     -DCMAKE_EXE_LINKER_FLAGS_RELEASE="$FS_LDFLAGS" \
     ../
-ninja -v
+
+# Capture the full build log and, on failure, print the first FAILED: block
+# with its actual error: text automatically -- ninja's default parallelism
+# interleaves dozens of concurrent compiler outputs, which previously buried
+# the real error under unrelated warnings from other translation units.
+FEEDSIM_BUILD_LOG="$(mktemp)"
+if ! ninja -v 2>&1 | tee "${FEEDSIM_BUILD_LOG}"; then
+    echo "=== FeedSim build FAILED. First failing command: ===" >&2
+    awk '/^FAILED:/{f=1} f{print; if (++n>60) exit}' "${FEEDSIM_BUILD_LOG}" >&2
+    rm -f "${FEEDSIM_BUILD_LOG}"
+    exit 1
+fi
+rm -f "${FEEDSIM_BUILD_LOG}"
