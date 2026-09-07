@@ -31,6 +31,22 @@ die() {
   exit "$code"
 }
 
+download_with_fallback() {
+    local output=$1
+    shift
+    local url
+
+    rm -f "${output}"
+    for url in "$@"; do
+        msg "Downloading ${output} from ${url}"
+        if wget -q "${url}" -O "${output}" && [ -s "${output}" ]; then
+            return 0
+        fi
+        msg "Download failed: ${url}"
+    done
+    die "Could not download ${output} from any configured mirror."
+}
+
 ARCH="$(uname -p)"
 if [ "$ARCH" = "aarch64" ]; then
   if distro_is_like ubuntu; then
@@ -62,14 +78,23 @@ chmod u+x "${FEEDSIM_ROOT_SRC}/run.sh"
 chmod u+x "${FEEDSIM_ROOT_SRC}/run-feedsim-multi.sh"
 
 msg "Installing third-party dependencies..."
-cp -r "${BENCHPRESS_ROOT}/packages/feedsim/third_party" "${FEEDSIM_ROOT_SRC}"
-mv "${FEEDSIM_THIRD_PARTY_SRC}/src" "${FEEDSIM_ROOT_SRC}/src"
+mkdir -p "${FEEDSIM_THIRD_PARTY_SRC}"
+if [ -d "${FEEDSIM_ROOT_SRC}/src" ]; then
+    msg "[SKIPPED] FeedSim source staging; ${FEEDSIM_ROOT_SRC}/src already exists"
+elif [ -d "${FEEDSIM_THIRD_PARTY_SRC}/src" ]; then
+    mv "${FEEDSIM_THIRD_PARTY_SRC}/src" "${FEEDSIM_ROOT_SRC}/src"
+else
+    cp -r "${BENCHPRESS_ROOT}/packages/feedsim/third_party/src" "${FEEDSIM_THIRD_PARTY_SRC}/src"
+    mv "${FEEDSIM_THIRD_PARTY_SRC}/src" "${FEEDSIM_ROOT_SRC}/src"
+fi
 cd "${FEEDSIM_THIRD_PARTY_SRC}"
 
 # Installing cmake-3.14.5
 
 if ! [ -d "cmake-3.14.5" ]; then
-    wget "https://github.com/Kitware/CMake/releases/download/v3.14.5/cmake-3.14.5.tar.gz"
+    download_with_fallback "cmake-3.14.5.tar.gz" \
+        "https://github.com/Kitware/CMake/releases/download/v3.14.5/cmake-3.14.5.tar.gz" \
+        "https://cmake.org/files/v3.14/cmake-3.14.5.tar.gz"
     tar -zxf "cmake-3.14.5.tar.gz"
     cd "cmake-3.14.5"
     mkdir staging
@@ -85,7 +110,9 @@ export PATH="${FEEDSIM_THIRD_PARTY_SRC}/cmake-3.14.5/staging/bin:${PATH}"
 
 # Installing gengetopt
 if ! [ -d "gengetopt-2.23" ]; then
-    wget "https://ftp.gnu.org/gnu/gengetopt/gengetopt-2.23.tar.xz"
+    download_with_fallback "gengetopt-2.23.tar.xz" \
+        "https://ftpmirror.gnu.org/gengetopt/gengetopt-2.23.tar.xz" \
+        "https://ftp.gnu.org/gnu/gengetopt/gengetopt-2.23.tar.xz"
     tar -xf "gengetopt-2.23.tar.xz"
     cd "gengetopt-2.23"
     ./configure
@@ -98,7 +125,9 @@ fi
 
 # Installing Boost
 if ! [ -d "boost_1_71_0" ] && ! grep -i 'centos stream release 9' /etc/*-release; then
-    wget "https://archives.boost.io/release/1.71.0/source/boost_1_71_0.tar.gz"
+    download_with_fallback "boost_1_71_0.tar.gz" \
+        "https://archives.boost.io/release/1.71.0/source/boost_1_71_0.tar.gz" \
+        "https://boostorg.jfrog.io/artifactory/main/release/1.71.0/source/boost_1_71_0.tar.gz"
     tar -xzf "boost_1_71_0.tar.gz"
     cd "boost_1_71_0"
     ./bootstrap.sh --without-libraries=python
